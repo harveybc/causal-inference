@@ -1,0 +1,13 @@
+numpy
+tensorflow-gpu
+pandas
+h5py
+scipy
+build
+pytest
+pdoc3
+openrl
+neat-python
+stable-baselines3
+scikit-learn
+gym
