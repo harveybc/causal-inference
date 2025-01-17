@@ -10,7 +10,7 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     """
     Processes input data using the preprocessor plugin.
 
-    This function loads the specified dataset, assigns headers if missing,
+    This function loads the specified dataset, dynamically assigns headers based on the dataset,
     and applies the preprocessor plugin to filter and prepare the data for causal inference.
 
     Parameters
@@ -29,9 +29,9 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     input_data = load_csv(config['input_file'], headers=False)
     logger.info(f"Input data loaded with shape: {input_data.shape}")
 
-    # Assign headers based on dataset structure
+    # Dynamically assign headers based on the dataset's number of columns
     logger.info("Assigning headers to input data.")
-    input_data.columns = [
+    expected_headers = [
         'event_date',         # Event date
         'event_time',         # Event time (New York time)
         'country',            # Country of the event
@@ -43,15 +43,23 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
         'forecast_data',      # Forecasted event data
         'previous_data'       # Previous data with possible comments
     ]
+    if input_data.shape[1] != len(expected_headers):
+        logger.warning(f"Dataset column count mismatch: Expected {len(expected_headers)}, Found {input_data.shape[1]}.")
+        expected_headers = expected_headers[:input_data.shape[1]]
+
+    input_data.columns = expected_headers
+    logger.debug(f"Assigned headers: {input_data.columns.tolist()}")
 
     # Strip whitespace from string columns
     for col in ['country', 'volatility_degree', 'event_description', 'evaluation', 'data_format']:
-        input_data[col] = input_data[col].str.strip()
+        if col in input_data.columns:
+            input_data[col] = input_data[col].str.strip()
 
     # Ensure numeric columns are properly parsed
     numeric_cols = ['actual_data', 'forecast_data', 'previous_data']
     for col in numeric_cols:
-        input_data[col] = pd.to_numeric(input_data[col], errors='coerce')
+        if col in input_data.columns:
+            input_data[col] = pd.to_numeric(input_data[col], errors='coerce')
 
     logger.debug(f"Processed dataset after assigning headers and cleaning: {input_data.head()}")
 
@@ -60,6 +68,7 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     preprocessed_data = preprocessor_plugin.process(input_data)
     logger.debug(f"Preprocessed data shape: {preprocessed_data.shape}")
     return preprocessed_data
+
 
 
 
