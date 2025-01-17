@@ -13,9 +13,9 @@ from app.config_handler import (
 )
 from app.cli import parse_args
 from app.data_processor import (
-    process_data,
-    load_and_evaluate_model,
-    run_prediction_pipeline,
+    preprocess_data,
+    infer_causal_effects,
+    transform_to_time_series,
 )
 from app.config import DEFAULT_VALUES
 from app.plugin_loader import load_plugin
@@ -23,20 +23,20 @@ from config_merger import merge_config, process_unknown_args
 
 def main():
     """
-    Main entry point for the RL optimizer application.
+    Main entry point for the Causal-Inference application.
 
     This function orchestrates the overall workflow:
     - Sets up centralized logging.
     - Parses command-line arguments.
     - Loads and merges configurations from default, local, and remote sources.
-    - Dynamically loads optimizer, environment, and agent plugins.
-    - Executes the training or prediction pipeline based on the configuration.
+    - Dynamically loads preprocessing, inference, and transformation plugins.
+    - Executes the preprocessing, causal inference, and transformation pipelines.
     - Saves configurations locally or remotely if specified.
     """
     # Initialize centralized logging
     setup_logging(
         log_level=logging.DEBUG,
-        log_file="rl_optimizer.log",
+        log_file="causal_inference.log",
         max_bytes=10*1024*1024,  # 10 MB
         backup_count=5
     )
@@ -54,7 +54,7 @@ def main():
         logger.debug(f"Default configuration: {config}")
 
         file_config = {}
-        
+
         # Remote config file load
         if args.remote_load_config:
             logger.info(f"Loading remote configuration from: {args.remote_load_config}")
@@ -76,50 +76,47 @@ def main():
         config = merge_config(config, {}, file_config, cli_args, unknown_args_dict)
         logger.debug(f"Merged configuration: {config}")
 
-        # Load and initialize optimizer plugin
-        optimizer_plugin_name = config.get("optimizer_plugin")
-        logger.info(f"Loading optimizer plugin: {optimizer_plugin_name}")
-        optimizer_class, optimizer_module = load_plugin(
-            "rl_optimizer.optimizers", optimizer_plugin_name
+        # Load and initialize preprocessing plugin
+        preprocessing_plugin_name = config.get("preprocessing_plugin")
+        logger.info(f"Loading preprocessing plugin: {preprocessing_plugin_name}")
+        preprocessing_class, preprocessing_module = load_plugin(
+            "causal_inference.preprocessing", preprocessing_plugin_name
         )
-        optimizer_plugin = optimizer_class()
-        logger.debug(f"Loaded optimizer plugin '{optimizer_plugin_name}' from '{optimizer_module}'.")
+        preprocessing_plugin = preprocessing_class()
+        logger.debug(f"Loaded preprocessing plugin '{preprocessing_plugin_name}' from '{preprocessing_module}'.")
 
-        # Load and initialize environment plugin
-        environment_plugin_name = config.get("environment_plugin")
-        logger.info(f"Loading environment plugin: {environment_plugin_name}")
-        environment_class, environment_module = load_plugin(
-            "rl_optimizer.environments", environment_plugin_name
+        # Load and initialize inference plugin
+        inference_plugin_name = config.get("inference_plugin")
+        logger.info(f"Loading inference plugin: {inference_plugin_name}")
+        inference_class, inference_module = load_plugin(
+            "causal_inference.inference", inference_plugin_name
         )
-        environment_plugin = environment_class()
-        logger.debug(f"Loaded environment plugin '{environment_plugin_name}' from '{environment_module}'.")
+        inference_plugin = inference_class()
+        logger.debug(f"Loaded inference plugin '{inference_plugin_name}' from '{inference_module}'.")
 
-        # Load and initialize agent plugin
-        agent_plugin_name = config.get("agent_plugin")
-        logger.info(f"Loading agent plugin: {agent_plugin_name}")
-        agent_class, agent_module = load_plugin(
-            "rl_optimizer.agents", agent_plugin_name
+        # Load and initialize transformation plugin
+        transformation_plugin_name = config.get("transformation_plugin")
+        logger.info(f"Loading transformation plugin: {transformation_plugin_name}")
+        transformation_class, transformation_module = load_plugin(
+            "causal_inference.transformation", transformation_plugin_name
         )
-        agent_plugin = agent_class()
-        logger.debug(f"Loaded agent plugin '{agent_plugin_name}' from '{agent_module}'.")
+        transformation_plugin = transformation_class()
+        logger.debug(f"Loaded transformation plugin '{transformation_plugin_name}' from '{transformation_module}'.")
 
-        # Merge environment-specific parameters
-        logger.info("Merging environment-specific parameters...")
-        environment_params = getattr(environment_plugin, 'plugin_params', {})
-        config = merge_config(config, environment_params, file_config, cli_args, unknown_args_dict)
-        logger.debug(f"Configuration after merging environment parameters: {config}")
+        # Run preprocessing pipeline
+        logger.info("Running preprocessing pipeline...")
+        preprocessed_data = preprocess_data(config, preprocessing_plugin)
+        logger.debug("Preprocessing completed.")
 
-        # Set parameters for the environment plugin
-        environment_plugin.set_params(**config)
-        logger.debug("Environment plugin parameters set.")
+        # Run causal inference pipeline
+        logger.info("Running causal inference pipeline...")
+        inferred_effects = infer_causal_effects(config, preprocessed_data, inference_plugin)
+        logger.debug("Causal inference completed.")
 
-        # Determine whether to load an existing model or run the prediction pipeline
-        if config.get("load_model"):
-            logger.info("Loading and evaluating the existing model...")
-            load_and_evaluate_model(config, agent_plugin)
-        else:
-            logger.info("Processing data and running the prediction pipeline...")
-            run_prediction_pipeline(config, environment_plugin, agent_plugin, optimizer_plugin)
+        # Run transformation pipeline
+        logger.info("Running transformation pipeline...")
+        transformed_data = transform_to_time_series(config, inferred_effects, transformation_plugin)
+        logger.debug("Transformation to time series completed.")
 
         # Save configuration locally if specified
         if config.get("save_config"):
