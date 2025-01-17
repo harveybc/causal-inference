@@ -69,10 +69,12 @@ def main():
             logger.debug(f"Loaded local config: {local_config}")
 
         logger.info("Merging configurations...")
-        unknown_args_dict = process_unknown_args(cli_args)
+        # Pass the `unknown_args` instead of `cli_args`
+        unknown_args_dict = process_unknown_args(args.unknown_args if hasattr(args, 'unknown_args') else [])
         logger.debug(f"Unknown arguments: {unknown_args_dict}")
         config = merge_config(config, {}, file_config, cli_args, unknown_args_dict)
         logger.debug(f"Merged configuration: {config}")
+
 
         # Determine whether to evaluate a model or run the causal pipeline
         if config.get("evaluate_model"):

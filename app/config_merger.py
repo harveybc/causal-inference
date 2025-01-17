@@ -24,7 +24,10 @@ def process_unknown_args(unknown_args: List[str]) -> Dict[str, Any]:
     i = 0
     while i < len(unknown_args):
         key = unknown_args[i].lstrip('-')
-        value = unknown_args[i + 1] if i + 1 < len(unknown_args) else None
+        if i + 1 < len(unknown_args):
+            value = unknown_args[i + 1]
+        else:
+            value = None
 
         # Convert short-form to long-form using the mapping
         if key in ARGUMENT_MAPPING:
@@ -38,6 +41,7 @@ def process_unknown_args(unknown_args: List[str]) -> Dict[str, Any]:
 
     logger.debug(f"Completed processing unknown arguments: {processed_args}")
     return processed_args
+
 
 def convert_type(value: Any) -> Any:
     """
