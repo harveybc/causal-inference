@@ -10,8 +10,8 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     """
     Processes input data using the preprocessor plugin.
 
-    This function loads the specified dataset and applies the preprocessor plugin
-    to filter and prepare the data for causal inference.
+    This function loads the specified dataset, assigns headers if missing,
+    and applies the preprocessor plugin to filter and prepare the data for causal inference.
 
     Parameters
     ----------
@@ -26,14 +26,24 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
         Preprocessed data.
     """
     logger.info(f"Loading input data from: {config['input_file']}")
-    input_data = load_csv(config['input_file'], headers=config.get('headers', True))
+    input_data = load_csv(config['input_file'], headers=config.get('headers', False))
     logger.info(f"Input data loaded with shape: {input_data.shape}")
+
+    # Assign headers if not present
+    if not config.get('headers', False):
+        logger.info("Assigning headers to input data.")
+        input_data.columns = [
+            'event_date', 'event_time', 'country', 'volatility_degree', 'event_description',
+            'evaluation', 'data_format', 'actual_data', 'forecast_data', 'previous_data'
+        ]
+        logger.debug(f"Assigned headers: {input_data.columns.tolist()}")
 
     # Preprocess the data
     logger.info("Applying preprocessor plugin to filter and prepare the data.")
     preprocessed_data = preprocessor_plugin.process(input_data)
     logger.debug(f"Preprocessed data shape: {preprocessed_data.shape}")
     return preprocessed_data
+
 
 
 def align_with_hourly_dataset(hourly_dataset: str, time_series: pd.DataFrame) -> pd.DataFrame:
@@ -63,6 +73,7 @@ def align_with_hourly_dataset(hourly_dataset: str, time_series: pd.DataFrame) ->
     aligned_data = pd.merge(hourly_data[['timestamp']], time_series, on='timestamp', how='inner')
     logger.info(f"Aligned time series with shape: {aligned_data.shape}")
     return aligned_data
+
 
 
 def run_causal_pipeline(config: dict) -> None:
@@ -112,12 +123,13 @@ def run_causal_pipeline(config: dict) -> None:
         aligned_data = align_with_hourly_dataset(config['hourly_dataset'], transformed_data)
 
         # Save the output
-        write_csv(config['output_file'], aligned_data, headers=config.get('headers', True))
+        write_csv(config['output_file'], aligned_data, headers=True)
         logger.info(f"Aligned time series saved to: {config['output_file']}")
 
     except Exception as e:
         logger.error(f"Pipeline execution failed: {e}")
         raise
+
 
 
 
