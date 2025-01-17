@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="causal_inference",
     version="0.1.0",
-    packages=find_packages(where="src"),
+    packages=find_packages(where="."),
     package_dir={"": "src"},
     entry_points={
         "console_scripts": [
