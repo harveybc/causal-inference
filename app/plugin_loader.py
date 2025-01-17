@@ -1,7 +1,4 @@
-# app/plugin_loader.py
-
 from importlib import metadata
-import logging
 from app.logger import get_logger  # Import the centralized logger
 
 logger = get_logger(__name__)
@@ -63,56 +60,56 @@ def load_plugin(plugin_group: str, plugin_name: str):
         logger.exception(f"Unexpected error while loading plugin '{plugin_name}' from group '{plugin_group}': {e}")
         raise
 
-def load_environment_plugin(env_name: str):
+def load_preprocessing_plugin(plugin_name: str):
     """
-    Loads an environment plugin by name.
+    Loads a preprocessing plugin by name.
 
     Parameters:
     ----------
-    env_name : str
-        The name of the environment plugin to load.
+    plugin_name : str
+        The name of the preprocessing plugin to load.
 
     Returns:
     -------
     tuple:
-        - The environment plugin class.
+        - The preprocessing plugin class.
         - A list of required parameter names for the plugin.
     """
-    return load_plugin('rl_optimizer.environments', env_name)
+    return load_plugin('causal_inference.preprocessing', plugin_name)
 
-def load_agent_plugin(agent_name: str):
+def load_inference_plugin(plugin_name: str):
     """
-    Loads an agent plugin by name.
+    Loads an inference plugin by name.
 
     Parameters:
     ----------
-    agent_name : str
-        The name of the agent plugin to load.
+    plugin_name : str
+        The name of the inference plugin to load.
 
     Returns:
     -------
     tuple:
-        - The agent plugin class.
+        - The inference plugin class.
         - A list of required parameter names for the plugin.
     """
-    return load_plugin('rl_optimizer.agents', agent_name)
+    return load_plugin('causal_inference.inference', plugin_name)
 
-def load_optimizer_plugin(optimizer_name: str):
+def load_transformation_plugin(plugin_name: str):
     """
-    Loads an optimizer plugin by name.
+    Loads a transformation plugin by name.
 
     Parameters:
     ----------
-    optimizer_name : str
-        The name of the optimizer plugin to load.
+    plugin_name : str
+        The name of the transformation plugin to load.
 
     Returns:
     -------
     tuple:
-        - The optimizer plugin class.
+        - The transformation plugin class.
         - A list of required parameter names for the plugin.
     """
-    return load_plugin('rl_optimizer.optimizers', optimizer_name)
+    return load_plugin('causal_inference.transformation', plugin_name)
 
 def get_plugin_params(plugin_group: str, plugin_name: str):
     """
