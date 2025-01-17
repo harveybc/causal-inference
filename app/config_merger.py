@@ -72,10 +72,10 @@ def convert_type(value: Any) -> Any:
             return value
 
 def merge_config(defaults: Dict[str, Any],
-                 plugin_params: Dict[str, Any],
-                 config: Dict[str, Any],
-                 cli_args: Dict[str, Any],
-                 unknown_args: Dict[str, Any]) -> Dict[str, Any]:
+                plugin_params: Dict[str, Any],
+                config: Dict[str, Any],
+                cli_args: Dict[str, Any],
+                unknown_args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Merges configuration dictionaries with the following precedence:
     CLI arguments > Unknown arguments > File configuration > Plugin parameters > Default configuration.
@@ -117,17 +117,24 @@ def merge_config(defaults: Dict[str, Any],
     logger.debug(f"Step 3 Output: {merged_config}")
 
     # Step 4: Merge with CLI arguments (CLI args always override)
-    for key, value in cli_args.items():
-        if value is not None:
-            logger.debug(f"Step 4 - Merging from CLI args: '{key}' = {value}")
-            merged_config[key] = value
+    cli_keys = list(cli_args.keys())
+    for key in cli_keys:
+        if key in cli_args and cli_args[key] is not None:
+            logger.debug(f"Step 4 - Merging from CLI args: '{key}' = {cli_args[key]}")
+            merged_config[key] = cli_args[key]
 
-    # Step 5: Merge with unknown arguments
+    # Step 5: Merge unknown arguments
     for key, value in unknown_args.items():
         if value is not None:
             converted_value = convert_type(value)
             logger.debug(f"Step 5 - Merging from unknown args: '{key}' = {converted_value}")
             merged_config[key] = converted_value
+
+    # Step 6: Handle additional positional arguments
+    positional_args = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
+    if positional_args:
+        logger.debug(f"Positional arguments detected: {positional_args}")
+        # Logic for positional arguments (if required)
 
     logger.debug(f"Final merged configuration: {merged_config}")
     return merged_config
