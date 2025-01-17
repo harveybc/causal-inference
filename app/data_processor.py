@@ -50,10 +50,11 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     input_data.columns = expected_headers
     logger.debug(f"Assigned headers: {input_data.columns.tolist()}")
 
-    # Strip whitespace from string columns
-    for col in ['country', 'volatility_degree', 'event_description', 'evaluation', 'data_format']:
+    # Strip whitespace only from string columns
+    string_columns = ['country', 'volatility_degree', 'event_description', 'evaluation', 'data_format']
+    for col in string_columns:
         if col in input_data.columns:
-            input_data[col] = input_data[col].str.strip()
+            input_data[col] = input_data[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
     # Ensure numeric columns are properly parsed
     numeric_cols = ['actual_data', 'forecast_data', 'previous_data']
@@ -68,6 +69,7 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     preprocessed_data = preprocessor_plugin.process(input_data)
     logger.debug(f"Preprocessed data shape: {preprocessed_data.shape}")
     return preprocessed_data
+
 
 
 
