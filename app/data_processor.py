@@ -26,23 +26,41 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
         Preprocessed data.
     """
     logger.info(f"Loading input data from: {config['input_file']}")
-    input_data = load_csv(config['input_file'], headers=config.get('headers', False))
+    input_data = load_csv(config['input_file'], headers=False)
     logger.info(f"Input data loaded with shape: {input_data.shape}")
 
-    # Assign headers if not present
-    if not config.get('headers', False):
-        logger.info("Assigning headers to input data.")
-        input_data.columns = [
-            'event_date', 'event_time', 'country', 'volatility_degree', 'event_description',
-            'evaluation', 'data_format', 'actual_data', 'forecast_data', 'previous_data'
-        ]
-        logger.debug(f"Assigned headers: {input_data.columns.tolist()}")
+    # Assign headers based on dataset structure
+    logger.info("Assigning headers to input data.")
+    input_data.columns = [
+        'event_date',         # Event date
+        'event_time',         # Event time (New York time)
+        'country',            # Country of the event
+        'volatility_degree',  # Degree of volatility
+        'event_description',  # Description of the event
+        'evaluation',         # Evaluation (better/worse/same as forecast)
+        'data_format',        # Data format (%, K, M, T)
+        'actual_data',        # Actual event data
+        'forecast_data',      # Forecasted event data
+        'previous_data'       # Previous data with possible comments
+    ]
+
+    # Strip whitespace from string columns
+    for col in ['country', 'volatility_degree', 'event_description', 'evaluation', 'data_format']:
+        input_data[col] = input_data[col].str.strip()
+
+    # Ensure numeric columns are properly parsed
+    numeric_cols = ['actual_data', 'forecast_data', 'previous_data']
+    for col in numeric_cols:
+        input_data[col] = pd.to_numeric(input_data[col], errors='coerce')
+
+    logger.debug(f"Processed dataset after assigning headers and cleaning: {input_data.head()}")
 
     # Preprocess the data
     logger.info("Applying preprocessor plugin to filter and prepare the data.")
     preprocessed_data = preprocessor_plugin.process(input_data)
     logger.debug(f"Preprocessed data shape: {preprocessed_data.shape}")
     return preprocessed_data
+
 
 
 
@@ -67,12 +85,13 @@ def align_with_hourly_dataset(hourly_dataset: str, time_series: pd.DataFrame) ->
     logger.info(f"Hourly dataset loaded with shape: {hourly_data.shape}")
 
     # Ensure datetime alignment
-    hourly_data['timestamp'] = pd.to_datetime(hourly_data['timestamp'])
-    time_series['timestamp'] = pd.to_datetime(time_series['timestamp'])
+    hourly_data['timestamp'] = pd.to_datetime(hourly_data['datetime'], errors='coerce')
+    time_series['timestamp'] = pd.to_datetime(time_series['timestamp'], errors='coerce')
 
     aligned_data = pd.merge(hourly_data[['timestamp']], time_series, on='timestamp', how='inner')
     logger.info(f"Aligned time series with shape: {aligned_data.shape}")
     return aligned_data
+
 
 
 
