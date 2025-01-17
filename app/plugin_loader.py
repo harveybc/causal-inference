@@ -1,3 +1,4 @@
+#plugin_loader.py
 from importlib import metadata
 from app.logger import get_logger  # Import the centralized logger
 

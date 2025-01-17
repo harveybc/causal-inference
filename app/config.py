@@ -1,3 +1,4 @@
+#config.py
 DEFAULT_VALUES = {
     'input_file': 'data/economic_calendar.csv',
     'preprocessing_plugin': 'economic_preprocessor',
