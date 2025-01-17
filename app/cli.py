@@ -4,6 +4,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Causal-Inference: A tool with preprocessing, inference, and transformation plugin support.")
     
     parser.add_argument('--input_file', type=str, help='Path to the input dataset (e.g., economic calendar).')
+    parser.add_argument('--hourly_dataset', type=str, default='tests\\data\\eurusd_hour_2005_2020_ohlc.csv', help='Path to the hourly dataset for alignment.')
     parser.add_argument('-pp', '--preprocessing_plugin', type=str, default='economic_preprocessor', help='Name of the preprocessing plugin to use.')
     parser.add_argument('-ip', '--inference_plugin', type=str, default='double_ml_plugin', help='Name of the inference plugin to use.')
     parser.add_argument('-tp', '--transformation_plugin', type=str, default='time_series_transformer', help='Name of the transformation plugin to use.')

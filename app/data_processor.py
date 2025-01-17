@@ -36,12 +36,41 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     return preprocessed_data
 
 
+def align_with_hourly_dataset(hourly_dataset: str, time_series: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aligns the generated time series with the hourly dataset.
+
+    Parameters
+    ----------
+    hourly_dataset : str
+        Path to the hourly dataset CSV file.
+    time_series : pd.DataFrame
+        DataFrame containing the generated time series.
+
+    Returns
+    -------
+    pd.DataFrame
+        Aligned DataFrame with the same datetime index as the hourly dataset.
+    """
+    logger.info(f"Loading hourly dataset from: {hourly_dataset}")
+    hourly_data = load_csv(hourly_dataset, headers=True)
+    logger.info(f"Hourly dataset loaded with shape: {hourly_data.shape}")
+
+    # Ensure datetime alignment
+    hourly_data['timestamp'] = pd.to_datetime(hourly_data['timestamp'])
+    time_series['timestamp'] = pd.to_datetime(time_series['timestamp'])
+
+    aligned_data = pd.merge(hourly_data[['timestamp']], time_series, on='timestamp', how='inner')
+    logger.info(f"Aligned time series with shape: {aligned_data.shape}")
+    return aligned_data
+
+
 def run_causal_pipeline(config: dict) -> None:
     """
     Executes the causal inference pipeline using specified plugins.
 
     The pipeline integrates the preprocessor, inference, and transformation plugins
-    to produce a time series of trend and volatility influences.
+    to produce a time series of trend and volatility influences aligned with the hourly dataset.
     """
     logger.info("Starting causal inference pipeline.")
 
@@ -79,13 +108,17 @@ def run_causal_pipeline(config: dict) -> None:
         transformed_data = transformation_plugin.transform(causal_effects)
         logger.debug(f"Transformed data shape: {transformed_data.shape}")
 
+        # Align with hourly dataset
+        aligned_data = align_with_hourly_dataset(config['hourly_dataset'], transformed_data)
+
         # Save the output
-        write_csv(config['output_file'], transformed_data, headers=config.get('headers', True))
-        logger.info(f"Transformed time series saved to: {config['output_file']}")
+        write_csv(config['output_file'], aligned_data, headers=config.get('headers', True))
+        logger.info(f"Aligned time series saved to: {config['output_file']}")
 
     except Exception as e:
         logger.error(f"Pipeline execution failed: {e}")
         raise
+
 
 
 def evaluate_causal_model(config: dict) -> None:

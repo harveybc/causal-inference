@@ -1,5 +1,6 @@
 DEFAULT_VALUES = {
-    'input_file': 'data/economic_calendar.csv',
+    'input_file': 'tests\\data\\economic_calendar_2011_2021.csv',
+    'hourly_dataset': 'tests\\data\\eurusd_hour_2005_2020_ohlc.csv',  # Added default hourly dataset
     'output_file': 'output_time_series.csv',
     'preprocessing_plugin': 'economic_preprocessor',
     'inference_plugin': 'double_ml_plugin',
@@ -33,5 +34,6 @@ ARGUMENT_MAPPING = {
     'sc': 'save_config',
     'un': 'username',
     'pw': 'password',
-    'em': 'evaluate_model'
+    'em': 'evaluate_model',
+    'hd': 'hourly_dataset'  # Added argument mapping for hourly dataset
 }
