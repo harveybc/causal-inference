@@ -64,60 +64,67 @@ class Plugin:
                     models[file_name] = pickle.load(f)
         return models
 
-    def transform(self, events: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, causal_effects: pd.DataFrame, **kwargs) -> pd.DataFrame:
         """
-        Transform events into an hourly time series of trend and volatility.
+        Converts causal effects into an hourly time series of trend and volatility influence.
 
         Parameters
         ----------
-        events : pd.DataFrame
-            DataFrame containing the event data with timestamps.
+        causal_effects : pd.DataFrame
+            DataFrame containing causal effects estimated by the inference plugin.
+        kwargs : dict
+            Additional parameters like window size and distance decay factor.
 
         Returns
         -------
         pd.DataFrame
-            Hourly time series of trend and volatility.
+            Hourly time series DataFrame with trend and volatility influences.
         """
-        logger.info("Transforming events into time series.")
+        logger.info("Starting transformation of causal effects into time series.")
 
-        if not self.trend_models or not self.volatility_models:
-            self.load_models()
+        # Parameters
+        window_size = self.params.get('window_size', 128)
+        decay_factor = self.params.get('decay_factor', 0.5)
 
-        window_size = self.params['window_size']
-        time_index = pd.date_range(
-            start=events['timestamp'].min(),
-            end=events['timestamp'].max(),
-            freq='H'
-        )
-        
-        results = []
+        # Ensure timestamps are sorted
+        causal_effects = causal_effects.sort_values(by='timestamp')
 
-        for current_time in time_index:
-            # Select events within the time window
-            window_start = current_time - pd.Timedelta(hours=window_size)
-            window_events = events[(events['timestamp'] > window_start) & (events['timestamp'] <= current_time)]
+        # Generate hourly time series index
+        start_time = causal_effects['timestamp'].min()
+        end_time = causal_effects['timestamp'].max()
+        hourly_index = pd.date_range(start=start_time, end=end_time, freq='H')
 
-            if window_events.empty:
-                results.append({'timestamp': current_time, 'trend': 0.0, 'volatility': 0.0})
-                continue
+        # Initialize output DataFrame
+        time_series = pd.DataFrame(index=hourly_index, columns=['trend', 'volatility'])
+        time_series = time_series.fillna(0)
 
-            trend_score = self._calculate_score(window_events, self.trend_models, 'trend')
-            volatility_score = self._calculate_score(window_events, self.volatility_models, 'volatility')
+        # Process each tick
+        for tick_time in hourly_index:
+            # Select events within the window
+            window_start = tick_time - pd.Timedelta(hours=window_size)
+            window_events = causal_effects[(causal_effects['timestamp'] > window_start) & (causal_effects['timestamp'] <= tick_time)]
 
-            results.append({
-                'timestamp': current_time,
-                'trend': trend_score,
-                'volatility': volatility_score
-            })
+            # Calculate influence using distance decay
+            for _, event in window_events.iterrows():
+                time_diff = (tick_time - event['timestamp']).total_seconds() / 3600  # Time difference in hours
+                weight = np.exp(-decay_factor * time_diff)
 
-        time_series = pd.DataFrame(results)
+                # Update trend and volatility influences
+                time_series.loc[tick_time, 'trend'] += weight * event['trend_effect']
+                time_series.loc[tick_time, 'volatility'] += weight * event['volatility_effect']
 
-        # Save the resulting time series
-        output_file = self.params['output_file']
-        time_series.to_csv(output_file, index=False)
-        logger.info(f"Time series saved to {output_file}")
+        # Reset index and export as CSV if required
+        time_series.reset_index(inplace=True)
+        time_series.rename(columns={'index': 'timestamp'}, inplace=True)
 
+        if 'output_file' in kwargs:
+            output_file = kwargs['output_file']
+            time_series.to_csv(output_file, index=False)
+            logger.info(f"Transformed time series saved to: {output_file}")
+
+        logger.info("Time series transformation completed successfully.")
         return time_series
+
 
     def _calculate_score(self, events: pd.DataFrame, models: Dict[str, Any], target: str) -> float:
         """

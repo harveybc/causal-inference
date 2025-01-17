@@ -9,53 +9,46 @@ from app.logger import get_logger
 
 logger = get_logger(__name__)
 
-def process_data(config: dict, preprocessor_plugin) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def process_data(config: dict) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Processes input data for causal inference, including preprocessing.
+    Processes input data for causal inference and transformation plugins.
 
-    This function prepares data by loading the specified CSV files, applying
-    preprocessing via the preprocessor plugin, and ensuring data consistency.
+    This function prepares data by loading the specified CSV files, applying any
+    necessary transformations, and ensuring data consistency, including timestamps.
 
     Parameters
     ----------
     config : dict
         Configuration parameters.
-    preprocessor_plugin : object
-        The loaded preprocessor plugin.
 
     Returns
     -------
     Tuple[pd.DataFrame, pd.DataFrame]
-        - Preprocessed input data (features)
+        - Input data (features)
         - Target data (outcomes)
-
-    Raises
-    ------
-    ValueError
-        If data shapes do not match or required data is missing.
     """
-    logger.info(f"Loading raw input data from: {config['x_train_file']}")
-    raw_data = load_csv(config['x_train_file'], headers=config['headers'])
-    logger.info(f"Raw input data loaded with shape: {raw_data.shape}")
-
-    logger.info(f"Preprocessing input data using plugin: {config['preprocessor_plugin']}")
-    preprocessor_plugin.set_params(**config)
-    preprocessed_data = preprocessor_plugin.process_and_transform(raw_data)
-    logger.info(f"Preprocessed input data shape: {preprocessed_data.shape}")
+    logger.info(f"Loading input data from: {config['x_train_file']}")
+    x_train_data = load_csv(config['x_train_file'], headers=config['headers'])
+    logger.info(f"Input data loaded with shape: {x_train_data.shape}")
 
     logger.info(f"Loading target data from: {config['y_train_file']}")
     y_train_data = load_csv(config['y_train_file'], headers=config['headers'])
     logger.info(f"Target data loaded with shape: {y_train_data.shape}")
 
+    # Ensure timestamp column is present
+    if 'timestamp' not in x_train_data.columns:
+        logger.warning("'timestamp' column missing in input data. Generating sequential timestamps.")
+        x_train_data['timestamp'] = pd.date_range(start=config['start_date'], periods=len(x_train_data), freq='H')
+
     # Ensure data integrity
-    if len(preprocessed_data) != len(y_train_data):
+    if len(x_train_data) != len(y_train_data):
         logger.warning("Input and target data lengths do not match. Trimming to minimum length.")
-        min_length = min(len(preprocessed_data), len(y_train_data))
-        preprocessed_data = preprocessed_data[:min_length]
+        min_length = min(len(x_train_data), len(y_train_data))
+        x_train_data = x_train_data[:min_length]
         y_train_data = y_train_data[:min_length]
 
-    logger.debug(f"Processed data shapes - Inputs: {preprocessed_data.shape}, Targets: {y_train_data.shape}")
-    return preprocessed_data, y_train_data
+    logger.debug(f"Processed data shapes - Inputs: {x_train_data.shape}, Targets: {y_train_data.shape}")
+    return x_train_data, y_train_data
 
 
 def run_causal_pipeline(config: dict) -> None:
