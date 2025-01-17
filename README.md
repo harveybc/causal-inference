@@ -126,17 +126,14 @@ causal-inference/
 │   ├── plugin_loader.py          # Dynamically loads preprocessing, inference, and transformation plugins
 │   └── plugins/                  # Plugin directory
 │       ├── preprocessing/        # Preprocessing plugins
-│       │   ├── base_preprocessor_plugin.py
 │       │   ├── economic_preprocessor_plugin.py
 │       │   └── ...
 │       ├── inference/            # Inference plugins
-│       │   ├── base_inference_plugin.py
 │       │   ├── double_ml_plugin.py
 │       │   ├── causal_forest_plugin.py
 │       │   ├── meta_learning_plugin.py
 │       │   └── ...
 │       ├── transformation/       # Transformation plugins
-│           ├── base_transformer_plugin.py
 │           ├── time_series_transformer_plugin.py
 │           └── ...
 │
