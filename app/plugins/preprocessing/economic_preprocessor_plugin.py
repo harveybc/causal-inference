@@ -1,68 +1,81 @@
-import torch
-import torch.nn as nn
-
-class PPOAgent(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim):
-        super(PPOAgent, self).__init__()
-        self.actor = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()
-        )
-        self.critic = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, state):
-        value = self.critic(state)
-        policy_dist = self.actor(state)
-        return policy_dist, value
+import pandas as pd
+import itertools
+import os
 
 class Plugin:
     """
-    An agent plugin for making predictions using a PPO model.
+    Economic Preprocessor Plugin
+
+    This plugin processes economic data by filtering and splitting the dataset
+    based on specified combinations of columns. It prepares subsets of data
+    with relevant features for further analysis in the inference and transformation plugins.
     """
 
     plugin_params = {
-        'state_dim': 64,
-        'action_dim': 1,
-        'hidden_dim': 64,
-        'genome_file': 'ppo_model.pkl'
+        'columns_to_combine': ['Country', 'Event Type'],
+        'target_columns': ['Trend', 'Volatility'],  # Columns representing outcomes
+        'heterogeneous_columns': ['Forecast', 'Actual'],  # Event-specific data
+        'filtered_output_path': 'processed_data/',  # Where to save filtered datasets
     }
+
+    plugin_debug_vars = ['columns_to_combine', 'target_columns', 'heterogeneous_columns']
 
     def __init__(self):
         self.params = self.plugin_params.copy()
-        self.agent = None
 
     def set_params(self, **kwargs):
         for key, value in kwargs.items():
             self.params[key] = value
-        self.agent = PPOAgent(
-            state_dim=self.params['state_dim'],
-            action_dim=self.params['action_dim'],
-            hidden_dim=self.params['hidden_dim']
-        )
 
-    def load(self, model_path):
-        with open(model_path, 'rb') as f:
-            self.agent.load_state_dict(torch.load(f))
-        print(f"Agent model loaded from {model_path}")
+    def get_debug_info(self):
+        """
+        Returns debugging information for the plugin's configuration.
+        """
+        return {var: self.params[var] for var in self.plugin_debug_vars}
 
-    def predict(self, data):
-        self.agent.eval()
-        with torch.no_grad():
-            data = torch.FloatTensor(data.to_numpy())
-            policy_dist, _ = self.agent(data)
-            predictions = policy_dist.numpy()
-        return predictions
+    def add_debug_info(self, debug_info):
+        """
+        Adds plugin-specific debugging information to a provided debug_info dictionary.
+        """
+        plugin_debug_info = self.get_debug_info()
+        debug_info.update(plugin_debug_info)
 
-    def save(self, model_path):
-        with open(model_path, 'wb') as f:
-            torch.save(self.agent.state_dict(), f)
-        print(f"Agent model saved to {model_path}")
+    def preprocess(self, data: pd.DataFrame):
+        """
+        Preprocess the economic data by splitting it into subsets based on specified combinations of columns.
 
-    def get_agent(self):
-        return self.agent
+        Parameters
+        ----------
+        data : pd.DataFrame
+            The input dataset containing economic event data.
+
+        Returns
+        -------
+        dict
+            A dictionary containing filtered datasets for each combination of columns.
+        """
+        # Validate required columns
+        required_columns = set(self.params['columns_to_combine'] + self.params['target_columns'] + self.params['heterogeneous_columns'])
+        missing_columns = required_columns - set(data.columns)
+        if missing_columns:
+            raise ValueError(f"Missing required columns in the dataset: {missing_columns}")
+
+        # Ensure output directory exists
+        os.makedirs(self.params['filtered_output_path'], exist_ok=True)
+
+        # Generate combinations of specified columns
+        column_combinations = list(itertools.combinations(self.params['columns_to_combine'], len(self.params['columns_to_combine'])))
+        processed_data = {}
+
+        for combination in column_combinations:
+            combination_name = '_'.join(combination)
+            filtered_data = data.groupby(list(combination), group_keys=True).apply(lambda x: x.reset_index(drop=True))
+
+            # Save the filtered dataset
+            output_file = os.path.join(self.params['filtered_output_path'], f"{combination_name}_filtered.csv")
+            filtered_data.to_csv(output_file, index=False)
+            processed_data[combination_name] = filtered_data
+
+            print(f"Processed and saved dataset for combination: {combination_name} to {output_file}")
+
+        return processed_data

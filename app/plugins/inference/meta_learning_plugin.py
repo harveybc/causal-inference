@@ -2,25 +2,27 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
-import itertools
+import os
 import pickle
+
 
 class Plugin:
     """
-    Meta-learning plugin for training models to estimate expected outcomes.
+    Economic Inference Plugin
 
-    This plugin prepares and trains models for combinations of specified columns
-    and stores the trained models for later use in transformation plugins.
+    This plugin trains models for combinations of specified columns to estimate
+    the impact of treatments on target outcomes such as Trend and Volatility.
     """
 
     plugin_params = {
-        'max_combination_size': 3,  # Maximum number of columns to combine
-        'columns_to_combine': ['Country', 'Event Type', 'Degree of Volatility'],
-        'target_columns': ['Trend', 'Volatility'],  # Columns to predict
-        'model_output_path': 'trained_models/',  # Path to save models
+        'max_combination_size': 2,  # Maximum number of columns to combine
+        'columns_to_combine': ['Country', 'Event Type'],  # Columns defining treatments
+        'target_columns': ['Trend', 'Volatility'],  # Outcome columns
+        'heterogeneous_columns': ['Forecast', 'Actual'],  # Features for treatment heterogeneity
+        'model_output_path': 'trained_models/',  # Directory to save trained models
     }
 
-    plugin_debug_vars = ['max_combination_size', 'columns_to_combine', 'target_columns']
+    plugin_debug_vars = ['max_combination_size', 'columns_to_combine', 'target_columns', 'heterogeneous_columns']
 
     def __init__(self):
         self.params = self.plugin_params.copy()
@@ -31,79 +33,84 @@ class Plugin:
             self.params[key] = value
 
     def get_debug_info(self):
+        """
+        Returns debugging information for the plugin's configuration.
+        """
         return {var: self.params[var] for var in self.plugin_debug_vars}
 
     def add_debug_info(self, debug_info):
+        """
+        Adds plugin-specific debugging information to a provided debug_info dictionary.
+        """
         plugin_debug_info = self.get_debug_info()
         debug_info.update(plugin_debug_info)
 
-    def train_models(self, data: pd.DataFrame):
+    def train_models(self, data_dict: dict):
         """
-        Train models for combinations of specified columns to predict target outcomes.
+        Train models for each combination of columns to predict target outcomes.
 
         Parameters
         ----------
-        data : pd.DataFrame
-            The input dataset containing the features and targets.
+        data_dict : dict
+            A dictionary where keys are combination names (e.g., 'Country_Event Type')
+            and values are DataFrames filtered by the preprocessing plugin.
 
         Raises
         ------
         ValueError
-            If required columns are missing from the dataset.
+            If required columns are missing from any filtered dataset.
         """
-        # Validate dataset columns
-        required_columns = set(self.params['columns_to_combine'] + self.params['target_columns'])
-        missing_columns = required_columns - set(data.columns)
-        if missing_columns:
-            raise ValueError(f"Missing required columns in the dataset: {missing_columns}")
+        # Ensure output directory exists
+        os.makedirs(self.params['model_output_path'], exist_ok=True)
 
-        # Prepare combinations of columns
-        max_comb_size = self.params['max_combination_size']
-        column_combinations = []
-        for r in range(1, max_comb_size + 1):
-            column_combinations.extend(itertools.combinations(self.params['columns_to_combine'], r))
+        for combination_name, data in data_dict.items():
+            print(f"Processing dataset for combination: {combination_name}")
 
-        # Train a model for each combination of columns
-        for combination in column_combinations:
-            combination_name = '_'.join(combination)
+            # Validate required columns
+            required_columns = set(self.params['target_columns'] + self.params['heterogeneous_columns'])
+            missing_columns = required_columns - set(data.columns)
+            if missing_columns:
+                raise ValueError(f"Missing required columns in the dataset for {combination_name}: {missing_columns}")
+
             self.models[combination_name] = {}
-            
-            for target in self.params['target_columns']:
-                model_key = f"{combination_name}_to_{target}"
 
-                # Prepare the training data
-                X = pd.get_dummies(data[list(combination)], drop_first=True)
+            for target in self.params['target_columns']:
+                # Prepare training data
+                X = data[self.params['heterogeneous_columns']]
                 y = data[target]
 
                 # Train linear regression model
                 model = LinearRegression()
                 model.fit(X, y)
-                
-                # Store the model and training error
+
+                # Calculate training error
                 predictions = model.predict(X)
                 mse = mean_squared_error(y, predictions)
+
+                # Store the model and training error
                 self.models[combination_name][target] = {
                     'model': model,
-                    'features': X.columns.tolist(),
+                    'features': self.params['heterogeneous_columns'],
                     'mse': mse,
                 }
-                
-                print(f"Trained model: {model_key} with MSE: {mse:.4f}")
+
+                print(f"Trained model for {combination_name} -> {target} with MSE: {mse:.4f}")
 
     def save_models(self):
         """
-        Save the trained models to the specified output path.
+        Save all trained models to the specified output directory.
 
         Raises
         ------
         Exception
             If saving models fails.
         """
-        output_path = self.params['model_output_path']
         try:
             for combination, targets in self.models.items():
                 for target, model_info in targets.items():
-                    model_file = f"{output_path}{combination}_to_{target}.pkl"
+                    model_file = os.path.join(
+                        self.params['model_output_path'], f"{combination}_to_{target}.pkl"
+                    )
                     with open(model_file, 'wb') as f:
                         pickle.dump(model_info, f)
                     print(f"Model saved: {model_file}")
@@ -128,10 +135,24 @@ class Plugin:
             for model_path in model_paths:
                 with open(model_path, 'rb') as f:
                     model_info = pickle.load(f)
+
+                # Extract combination and target from file name
                 combination, target = model_path.split('/')[-1].replace('.pkl', '').rsplit('_to_', 1)
                 if combination not in self.models:
                     self.models[combination] = {}
                 self.models[combination][target] = model_info
+
                 print(f"Model loaded: {model_path}")
         except Exception as e:
             raise Exception(f"Error loading models: {e}")
+
+    def get_models(self):
+        """
+        Return the trained models for use in downstream tasks.
+
+        Returns
+        -------
+        dict
+            Dictionary of trained models.
+        """
+        return self.models
