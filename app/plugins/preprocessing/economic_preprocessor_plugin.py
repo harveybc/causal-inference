@@ -1,24 +1,30 @@
+# economic_preprocessor_plugin.py
+
 import pandas as pd
 import itertools
 import os
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 class Plugin:
     """
     Economic Preprocessor Plugin
 
-    This plugin processes economic data by filtering and splitting the dataset
-    based on specified combinations of columns. It prepares subsets of data
-    with relevant features for further analysis in the inference and transformation plugins.
+    This plugin processes economic data by filtering based on specified
+    countries and impact levels, and prepares the dataset for causal inference.
     """
 
     plugin_params = {
-        'columns_to_combine': ['Country', 'Event Type'],
+        'columns_to_combine': ['country', 'event_description'],  # Adjusted to correct column names
         'target_columns': ['Trend', 'Volatility'],  # Columns representing outcomes
-        'heterogeneous_columns': ['Forecast', 'Actual'],  # Event-specific data
+        'heterogeneous_columns': ['forecast_data', 'actual_data'],  # Event-specific data
         'filtered_output_path': 'processed_data/',  # Where to save filtered datasets
+        'key_countries': ['USA', 'Germany', 'France', 'UK', 'Italy'],  # Key countries
+        'impact_levels': ['high', 'medium'],  # Impact levels to filter
     }
 
-    plugin_debug_vars = ['columns_to_combine', 'target_columns', 'heterogeneous_columns']
+    plugin_debug_vars = ['columns_to_combine', 'target_columns', 'heterogeneous_columns', 'key_countries', 'impact_levels']
 
     def __init__(self):
         self.params = self.plugin_params.copy()
@@ -40,9 +46,9 @@ class Plugin:
         plugin_debug_info = self.get_debug_info()
         debug_info.update(plugin_debug_info)
 
-    def preprocess(self, data: pd.DataFrame):
+    def preprocess(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Preprocess the economic data by splitting it into subsets based on specified combinations of columns.
+        Preprocess the economic data by filtering based on key countries and impact levels.
 
         Parameters
         ----------
@@ -51,31 +57,35 @@ class Plugin:
 
         Returns
         -------
-        dict
-            A dictionary containing filtered datasets for each combination of columns.
+        pd.DataFrame
+            Filtered and processed DataFrame ready for causal inference.
         """
-        # Validate required columns
-        required_columns = set(self.params['columns_to_combine'] + self.params['target_columns'] + self.params['heterogeneous_columns'])
-        missing_columns = required_columns - set(data.columns)
-        if missing_columns:
-            raise ValueError(f"Missing required columns in the dataset: {missing_columns}")
+        logger.info("Starting economic data preprocessing.")
+
+        # Filter by key countries
+        logger.info(f"Filtering data for key countries: {self.params['key_countries']}")
+        data_filtered = data[data['country'].isin(self.params['key_countries'])]
+
+        # Filter by impact levels
+        logger.info(f"Filtering data for impact levels: {self.params['impact_levels']}")
+        data_filtered = data_filtered[data_filtered['volatility_degree'].isin(self.params['impact_levels'])]
+
+        logger.debug(f"Data after filtering by country and impact: {data_filtered.shape}")
+
+        # Assign combined columns for grouping (if needed)
+        combined_columns = self.params['columns_to_combine']
+        logger.info(f"Combining columns for grouping: {combined_columns}")
+
+        # If specific combinations are needed, adjust here
+        # Currently, we're returning the filtered DataFrame as a single group
+        # since sliding window is handled in data_processor.py
 
         # Ensure output directory exists
         os.makedirs(self.params['filtered_output_path'], exist_ok=True)
 
-        # Generate combinations of specified columns
-        column_combinations = list(itertools.combinations(self.params['columns_to_combine'], len(self.params['columns_to_combine'])))
-        processed_data = {}
+        # Save the filtered dataset
+        output_file = os.path.join(self.params['filtered_output_path'], "filtered_events.csv")
+        data_filtered.to_csv(output_file, index=False)
+        logger.info(f"Filtered events saved to {output_file}")
 
-        for combination in column_combinations:
-            combination_name = '_'.join(combination)
-            filtered_data = data.groupby(list(combination), group_keys=True).apply(lambda x: x.reset_index(drop=True))
-
-            # Save the filtered dataset
-            output_file = os.path.join(self.params['filtered_output_path'], f"{combination_name}_filtered.csv")
-            filtered_data.to_csv(output_file, index=False)
-            processed_data[combination_name] = filtered_data
-
-            print(f"Processed and saved dataset for combination: {combination_name} to {output_file}")
-
-        return processed_data
+        return data_filtered

@@ -1,4 +1,7 @@
+# data_processor.py
+
 import pandas as pd
+import numpy as np
 from typing import Tuple
 from app.data_handler import load_csv, write_csv
 from app.plugin_loader import load_plugin
@@ -23,7 +26,7 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Preprocessed data.
+        Preprocessed data with treatment features.
     """
     logger.info(f"Loading input data from: {config['input_file']}")
     input_data = load_csv(config['input_file'], headers=False)
@@ -66,175 +69,131 @@ def process_data(config: dict, preprocessor_plugin) -> pd.DataFrame:
 
     # Preprocess the data
     logger.info("Applying preprocessor plugin to filter and prepare the data.")
-    preprocessed_data = preprocessor_plugin.process(input_data)
+    preprocessed_data = preprocessor_plugin.preprocess(input_data)
     logger.debug(f"Preprocessed data shape: {preprocessed_data.shape}")
+
+    # Calcular la señal de entrenamiento Q
+    logger.info("Calculating training signal Q (Trend and Volatility).")
+    preprocessed_data = calculate_training_signal(config['hourly_dataset'], preprocessed_data)
+
+    # Implementar la ventana deslizante para generar tratamientos
+    logger.info("Applying sliding window to generate treatments.")
+    preprocessed_data = apply_sliding_window(preprocessed_data, window_size=config.get('window_size', 128))
+
+    logger.debug(f"Data after Q calculation and sliding window: {preprocessed_data.head()}")
     return preprocessed_data
 
-
-
-
-
-
-def align_with_hourly_dataset(hourly_dataset: str, time_series: pd.DataFrame) -> pd.DataFrame:
+def calculate_training_signal(hourly_dataset: str, preprocessed_data: pd.DataFrame) -> pd.DataFrame:
     """
-    Aligns the generated time series with the hourly dataset.
+    Calculates the training signal Q (Trend and Volatility) from the hourly dataset.
 
     Parameters
     ----------
     hourly_dataset : str
         Path to the hourly dataset CSV file.
-    time_series : pd.DataFrame
-        DataFrame containing the generated time series.
+    preprocessed_data : pd.DataFrame
+        Preprocessed data with filtered events.
 
     Returns
     -------
     pd.DataFrame
-        Aligned DataFrame with the same datetime index as the hourly dataset.
+        Preprocessed data with 'Trend' and 'Volatility' columns added.
     """
     logger.info(f"Loading hourly dataset from: {hourly_dataset}")
     hourly_data = load_csv(hourly_dataset, headers=True)
     logger.info(f"Hourly dataset loaded with shape: {hourly_data.shape}")
 
-    # Ensure datetime alignment
+    # Ensure 'timestamp' is in datetime format
     hourly_data['timestamp'] = pd.to_datetime(hourly_data['datetime'], errors='coerce')
-    time_series['timestamp'] = pd.to_datetime(time_series['timestamp'], errors='coerce')
+    preprocessed_data['timestamp'] = pd.to_datetime(preprocessed_data['event_date'] + ' ' + preprocessed_data['event_time'], errors='coerce')
 
-    aligned_data = pd.merge(hourly_data[['timestamp']], time_series, on='timestamp', how='inner')
-    logger.info(f"Aligned time series with shape: {aligned_data.shape}")
-    return aligned_data
+    # Merge events with hourly market data
+    logger.info("Merging event data with hourly market dataset.")
+    merged_data = pd.merge_asof(preprocessed_data.sort_values('timestamp'),
+                                hourly_data.sort_values('timestamp'),
+                                on='timestamp',
+                                direction='backward')
 
+    # Sort by timestamp
+    merged_data = merged_data.sort_values('timestamp').reset_index(drop=True)
 
+    # Calculate Q: Trend and Volatility
+    logger.info("Calculating Trend and Volatility for each tick.")
 
+    # Calculate Trend: Change in close from current tick to 6 ticks ahead
+    merged_data['Trend'] = merged_data['close'].shift(-6) - merged_data['close']
 
-def run_causal_pipeline(config: dict) -> None:
+    # Calculate Volatility: Standard deviation of the next 6 closes
+    merged_data['Volatility'] = merged_data['close'].rolling(window=6, min_periods=6).std().shift(-6)
+
+    # Drop rows where Q cannot be calculated (last 6 ticks)
+    merged_data = merged_data.dropna(subset=['Trend', 'Volatility'])
+
+    logger.debug(f"Data after calculating Q: {merged_data[['timestamp', 'Trend', 'Volatility']].head()}")
+
+    return merged_data
+
+def apply_sliding_window(data: pd.DataFrame, window_size: int) -> pd.DataFrame:
     """
-    Executes the causal inference pipeline using specified plugins.
-
-    The pipeline integrates the preprocessor, inference, and transformation plugins
-    to produce a time series of trend and volatility influences aligned with the hourly dataset.
-    """
-    logger.info("Starting causal inference pipeline.")
-
-    try:
-        # Load and initialize preprocessing plugin
-        preprocessor_class, _ = load_plugin(
-            'causal_inference.preprocessing', config['preprocessing_plugin']
-        )
-        preprocessor_plugin = preprocessor_class()
-
-        # Preprocess the data
-        preprocessed_data = process_data(config, preprocessor_plugin)
-
-        # Load and initialize inference plugin
-        inference_class, _ = load_plugin(
-            'causal_inference.inference', config['inference_plugin']
-        )
-        inference_plugin = inference_class()
-        inference_plugin.set_params(**config)
-
-        # Estimate causal effects
-        logger.info("Estimating causal effects using the inference plugin.")
-        causal_effects = inference_plugin.estimate_effects(preprocessed_data)
-        logger.debug(f"Causal effects estimated with shape: {causal_effects.shape}")
-
-        # Load and initialize transformation plugin
-        transformation_class, _ = load_plugin(
-            'causal_inference.transformation', config['transformation_plugin']
-        )
-        transformation_plugin = transformation_class()
-        transformation_plugin.set_params(**config)
-
-        # Transform causal effects into time series
-        logger.info("Transforming causal effects into time series using the transformation plugin.")
-        transformed_data = transformation_plugin.transform(causal_effects)
-        logger.debug(f"Transformed data shape: {transformed_data.shape}")
-
-        # Align with hourly dataset
-        aligned_data = align_with_hourly_dataset(config['hourly_dataset'], transformed_data)
-
-        # Save the output
-        write_csv(config['output_file'], aligned_data, headers=True)
-        logger.info(f"Aligned time series saved to: {config['output_file']}")
-
-    except Exception as e:
-        logger.error(f"Pipeline execution failed: {e}")
-        raise
-
-
-
-
-def evaluate_causal_model(config: dict) -> None:
-    """
-    Evaluates a causal model using provided data and metrics.
-
-    This function validates the causal model by computing relevant metrics.
-    """
-    logger.info("Evaluating causal model.")
-
-    try:
-        # Load and initialize preprocessing plugin
-        preprocessor_class, _ = load_plugin(
-            'causal_inference.preprocessing', config['preprocessing_plugin']
-        )
-        preprocessor_plugin = preprocessor_class()
-
-        # Preprocess the data
-        preprocessed_data = process_data(config, preprocessor_plugin)
-
-        # Load and initialize inference plugin
-        inference_class, _ = load_plugin(
-            'causal_inference.inference', config['inference_plugin']
-        )
-        inference_plugin = inference_class()
-        inference_plugin.set_params(**config)
-
-        # Validate the causal model
-        logger.info("Validating causal model using validation metrics.")
-        metrics = causal_validation_metrics(inference_plugin, preprocessed_data)
-        logger.info("Causal model evaluation metrics:")
-        for metric, value in metrics.items():
-            logger.info(f"{metric}: {value}")
-
-    except Exception as e:
-        logger.error(f"Error during causal model evaluation: {e}")
-        raise
-
-
-def causal_validation_metrics(inference_plugin, preprocessed_data: pd.DataFrame) -> dict:
-    """
-    Computes validation metrics for the causal model.
+    Applies a sliding window to generate treatments from events within the window.
 
     Parameters
     ----------
-    inference_plugin : object
-        The inference plugin used to estimate causal effects.
-    preprocessed_data : pd.DataFrame
-        The preprocessed input data.
+    data : pd.DataFrame
+        Data with events and training signals Q.
+    window_size : int
+        Size of the sliding window in ticks.
 
     Returns
     -------
-    dict
-        Dictionary of computed metrics.
+    pd.DataFrame
+        Data with generated treatment features.
     """
-    logger.info("Validating causal model...")
-    try:
-        predictions = inference_plugin.predict(preprocessed_data)
-        actuals = preprocessed_data[['Trend', 'Volatility']]  # Example targets
-        residuals = actuals - predictions
+    logger.info(f"Applying sliding window of size {window_size} ticks.")
+    data = data.sort_values('timestamp').reset_index(drop=True)
 
-        # Compute metrics
-        r_squared = 1 - (residuals.var() / actuals.var()).mean()
-        mse = (residuals**2).mean().mean()
-        mae = residuals.abs().mean().mean()
+    # Initialize treatment columns
+    data['sorpresa'] = data['actual_data'] - data['forecast_data']
 
-        metrics = {
-            "R-squared": r_squared,
-            "MSE": mse,
-            "MAE": mae,
-        }
-        logger.debug(f"Validation metrics: {metrics}")
-        return metrics
+    # Initialize lists to store aggregated treatments
+    sorpresa_ponderada = []
+    distancia_promedio = []
 
-    except Exception as e:
-        logger.error(f"Error during validation metrics calculation: {e}")
-        raise
+    # Precompute exponential decay factors
+    decay_alpha = 0.1  # You can parameterize this if needed
+
+    for i in range(len(data)):
+        current_time = data.loc[i, 'timestamp']
+        window_start_time = current_time - pd.Timedelta(hours=window_size)
+
+        # Filter events within the sliding window
+        window_events = data[(data['timestamp'] > window_start_time) & (data['timestamp'] <= current_time)]
+
+        if not window_events.empty:
+            # Calculate distance in ticks (assuming each tick is one hour)
+            window_events = window_events.copy()
+            window_events['distancia'] = (current_time - window_events['timestamp']).dt.total_seconds() / 3600  # Distance in ticks
+
+            # Apply exponential decay to sorpresas
+            window_events['decay'] = np.exp(-decay_alpha * window_events['distancia'])
+
+            # Calculate weighted sorpresa
+            weighted_sorpresa = (window_events['sorpresa'] * window_events['decay']).sum()
+
+            # Calculate average distancia
+            avg_distancia = window_events['distancia'].mean()
+
+            sorpresa_ponderada.append(weighted_sorpresa)
+            distancia_promedio.append(avg_distancia)
+        else:
+            # No events in the window
+            sorpresa_ponderada.append(0)
+            distancia_promedio.append(0)
+
+    # Add the aggregated treatment features to the DataFrame
+    data['sorpresa_ponderada'] = sorpresa_ponderada
+    data['distancia_promedio'] = distancia_promedio
+
+    logger.debug(f"Aggregated treatment features added: {data[['sorpresa_ponderada', 'distancia_promedio']].head()}")
+
+    return data
