@@ -1,176 +1,117 @@
-# Causal-Inference
+# causal-inference
 
 ## Minimal M5PHET causal provider
 
-The real CPU-only ATE provider lives in the isolated `provider/` subproject.
-See [installation, explicit demo preparation and contract](docs/M5PHET_CAUSAL_PROVIDER.md).
-It requires caller-declared identifying assumptions and never fits during chat
-inference. The historical application instructions below are not the provider's
+The CPU-only ATE provider lives in the isolated `provider/` subproject; see
+[installation, explicit demo preparation and contract](docs/M5PHET_CAUSAL_PROVIDER.md).
+It is inference-only over studies that were fitted on purpose beforehand, it requires
+caller-declared identifying assumptions, and it never fits during chat inference.
+
+It reports no accuracy, and refuses to: a causal estimate has no held-out truth,
+because the counterfactual outcome of a row is never observed. It reports the
+estimate, its interval, the assumptions it rests on and its diagnostics.
+
+The application instructions below are the historical tool's, not the provider's
 installation path.
 
-## Description
+**Status: experimental research repository — unverified.** This repository
+hosts exploratory causal-inference research for regime-based trading
+strategies. Nothing here is a released tool: the scripts are one-off
+research artifacts, the inherited application code is unmaintained, and no
+claim in this README has been verified by running the code for this
+document beyond inspecting the committed tree.
 
-Causal-Inference is a modular and extensible tool designed to transform datasets, such as economic calendars, into time series that reflect the causal influence of events on target variables like trend and volatility. It supports dynamic plugins for preprocessing, causal inference, and transformation, making it adaptable to a wide range of datasets and causal estimation methods. By leveraging advanced methods like Double Machine Learning, Causal Forests, and Meta-Learning, the tool provides robust and customizable pipelines for causal transformation tasks.
+## What this repository actually is
 
-### Key Features:
-- **Dynamic Plugins:** Easily integrate different preprocessing methods, causal inference techniques, and transformation approaches.
-- **Flexible Causal Methods:** Includes support for Double Machine Learning, Causal Forests, and Meta-Learning, with the ability to add new methods as plugins.
-- **Time Series Transformation:** Converts inferred causal relationships into hourly time series data for applications like financial forecasting or trading.
-- **Extensibility:** Add custom plugins to experiment with different configurations and estimation techniques.
-- **Seamless Integration:** Can be used as a standalone tool or integrated into larger machine learning workflows.
+Two distinct layers share this repository:
 
-This tool is ideal for data scientists and machine learning engineers interested in causal analysis and its applications in financial forecasting, automated trading, and other domains.
+1. **An inherited fork of
+   [rl-optimizer](https://github.com/harveybc/rl-optimizer).** The
+   repository began as a copy of that project and most of the tree still
+   comes from it: the `app/` package (CLI, config handling, plugin loader,
+   data handler), the plugin modules under `app/plugins/`, the legacy
+   `tests/` suite and the helper `.bat`/`.sh` scripts.
 
-## Installation Instructions
+2. **Causal research scripts** added on top for regime-analysis
+   experiments (see below).
 
-To install and set up the Causal-Inference application, follow these steps:
+### Unrepaired inherited package identity — disclosure
 
-1. **Clone the Repository**:
-    ```bash
-    git clone https://github.com/harveybc/causal-inference.git
-    cd causal-inference
-    ```
+The package metadata still identifies the **inherited `rl-optimizer`
+package**: [`setup.py`](setup.py) declares `name='rl-optimizer'`, a
+`rl_optimizer=app.main:main` console script, `rl_optimizer.*` entry-point
+groups and the upstream `rl-optimizer` project URL. This has **not** been
+repaired: installing this repository would install a package named
+`rl-optimizer`, not `causal-inference`. Several declared entry points also
+reference module paths that do not exist in the committed tree (for
+example `app.plugins.optimizer_plugin_openrl` — the file actually lives at
+`app/plugins/transformation/optimizer_plugin_openrl.py`, and the NEAT
+optimizer plugins are absent entirely). Code ownership and packaging
+identity will be separated in a future repair; until then treat the
+packaging metadata as stale.
 
-2. **Create and Activate a Virtual Environment (Anaconda is required)**:
+## Causal research content committed on `master`
 
-    - **Using `conda`**:
-        ```bash
-        conda create --name causal-inference-env python=3.9
-        conda activate causal-inference-env
-        ```
+- [`causal_regime_analysis.py`](causal_regime_analysis.py) — the main
+  research script. It applies three techniques to 12 regime features
+  derived from EURUSD hourly OHLC data (resampled to 4h):
+  1. NOTEARS causal discovery (DAG structure among features),
+  2. Invariant Causal Prediction (stability of feature/forward-return
+     relationships across regimes),
+  3. DoWhy refutation tests (placebo and random-confounder checks).
 
-3. **Install Dependencies**:
-    ```bash
-    pip install --upgrade pip
-    pip install -r requirements.txt
-    ```
+  It expects its input CSV from a sibling `feature-eng` checkout (path
+  overridable via the `OHLC_FILE` environment variable). The input data is
+  **not** committed here.
+- [`results/causal_analysis_results.json`](results/causal_analysis_results.json)
+  — the recorded output of one historical run of that script (ICP scores,
+  p-values and per-regime coefficients per feature). It documents a
+  specific past run and is not regenerated automatically; it has not been
+  independently reproduced for this README.
 
-4. **Build the Package**:
-    ```bash
-    python -m build
-    ```
+Additional causal research scripts (a v2 regime analysis, cluster-based
+regime analysis and cross-asset comparison/audit work) exist only as
+**uncommitted work-in-progress in the owner's local working tree**. They
+are not part of the repository history and are deliberately not described
+here; they will be documented if and when they are committed.
 
-5. **Install the Package**:
-    ```bash
-    pip install .
-    ```
+## Inherited application code (unverified)
 
-6. **(Optional) Run the Application**:
-    - On Windows, run:
-        ```bash
-        causal-inference.bat
-        ```
+The `app/` package provides a plugin-based CLI inherited from
+rl-optimizer: [`app/main.py`](app/main.py), configuration merging
+([`app/config_handler.py`](app/config_handler.py),
+[`app/config_merger.py`](app/config_merger.py)), a plugin loader
+([`app/plugin_loader.py`](app/plugin_loader.py)) and plugin modules under
+[`app/plugins/`](app/plugins/) (inference, preprocessing and
+transformation groups, including an OpenRL PPO agent and
+prediction/custom environment plugins). The legacy
+[`tests/`](tests/) suite also predates the causal work. **None of this has
+been exercised or verified in the causal-inference context** — no claim is
+made that the CLI runs, that the plugins load, or that the tests pass.
 
-    - On Linux, run:
-        ```bash
-        sh causal-inference.sh
-        ```
+## Dependencies
 
-7. **(Optional) Run Tests**:
-    - On Windows, run:
-        ```bash
-        set_env.bat
-        pytest
-        ```
+[`requirements.txt`](requirements.txt) mixes inherited RL dependencies
+(`tensorflow-gpu`, `openrl`, `neat-python`, `stable-baselines3`, `gym`)
+with general scientific packages. The causal scripts additionally import
+libraries (e.g. for NOTEARS/DoWhy) that are not all pinned there. No
+tested installation procedure is claimed.
 
-    - On Linux, run:
-        ```bash
-        sh ./set_env.sh
-        pytest
-        ```
+## Relationship to sibling repositories
 
-8. **(Optional) Generate Documentation**:
-    - Run the following command to generate code documentation in HTML format in the docs directory:
-        ```bash
-        pdoc --html -o docs app
-        ```
-
-## Usage
-
-The application supports several command-line arguments to control its behavior:
-```bash
-usage: causal_inference.bat --help
-```
-
-### Command Line Arguments
-
-#### Required Arguments
-
-- `input_file` (str): Path to the input dataset (e.g., economic calendar).
-
-#### Optional Arguments
-
-- `-pp, --preprocessing_plugin` (str, default='economic_preprocessor'): Name of the preprocessing plugin to use.
-- `-ip, --inference_plugin` (str, default='double_ml_plugin'): Name of the inference plugin to use.
-- `-tp, --transformation_plugin` (str, default='time_series_transformer'): Name of the transformation plugin to use.
-- `-of, --output_file` (str): Path to the output time series file.
-- `-sm, --save_model` (str): Filename to save the trained inference model.
-- `-lm, --load_model` (str): Filename to load a trained inference model from.
-- `-te, --test_mode` (flag): Enable test mode with predefined configurations.
-- `-v, --verbose` (flag): Enable verbose output messages.
-
-### Examples of Use
-
-#### Basic Transformation Example
-
-To preprocess an economic calendar dataset, estimate causal effects using Double Machine Learning, and transform the results into time series data:
-
-```bash
-causal-inference.bat -pp economic_preprocessor -ip double_ml_plugin -tp time_series_transformer -of output_time_series.csv
-```
-
-## Project Directory Structure
-```bash
-causal-inference/
-│
-├── app/                           # Main application package
-│   ├── cli.py                    # Handles command-line argument parsing
-│   ├── config.py                 # Stores default configuration values
-│   ├── config_handler.py         # Manages configuration loading, saving, and merging
-│   ├── config_merger.py          # Merges configuration from various sources
-│   ├── data_handler.py           # Handles data loading and saving
-│   ├── data_processor.py         # Processes input data and runs the causal inference pipeline
-│   ├── main.py                   # Main entry point for the application
-│   ├── plugin_loader.py          # Dynamically loads preprocessing, inference, and transformation plugins
-│   └── plugins/                  # Plugin directory
-│       ├── preprocessing/        # Preprocessing plugins
-│       │   ├── base_preprocessor_plugin.py
-│       │   ├── economic_preprocessor_plugin.py
-│       │   └── ...
-│       ├── inference/            # Inference plugins
-│       │   ├── base_inference_plugin.py
-│       │   ├── double_ml_plugin.py
-│       │   ├── causal_forest_plugin.py
-│       │   ├── meta_learning_plugin.py
-│       │   └── ...
-│       ├── transformation/       # Transformation plugins
-│           ├── base_transformer_plugin.py
-│           ├── time_series_transformer_plugin.py
-│           └── ...
-│
-├── tests/                         # Test modules for the application
-│   ├── test_plugins.py
-│   ├── test_transformations.py
-│   └── ...
-│
-├── examples/                      # Examples of use
-│   ├── run_double_ml.py
-│   ├── run_meta_learning.py
-│   └── ...
-│
-├── causal_inference.py            # Main entry point for the application
-├── README.md                      # Overview and documentation for the project
-├── requirements.txt               # Lists Python package dependencies
-├── setup.py                       # Script for packaging and installing the project
-├── set_env.bat                    # Batch script for environment setup
-├── set_env.sh                     # Shell script for environment setup
-└── .gitignore                     # Specifies intentionally untracked files to ignore
-```
-
-## Contributing
-
-Contributions to the project are welcome! Please refer to the CONTRIBUTING.md file for guidelines on how to make contributions.
+- [rl-optimizer](https://github.com/harveybc/rl-optimizer) — the upstream
+  project this repository was forked from; its packaging identity is still
+  present here (see disclosure above).
+- [feature-eng](https://github.com/harveybc/feature-eng) — source of the
+  regime features and the OHLC test data consumed by
+  `causal_regime_analysis.py`.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+[`LICENSE.txt`](LICENSE.txt) (inherited from the upstream project).
+
+---
+
+*This README describes only what is committed on `master` as of
+2026-08-10. Experimental, unverified research — not a supported tool, not
+financial advice.*
