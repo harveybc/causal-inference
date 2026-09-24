@@ -101,6 +101,8 @@ celerybeat.pid
 .env
 .env.local
 .venv
+.venv-causal/
+.causal-studies/
 venv/
 ENV/
 env/

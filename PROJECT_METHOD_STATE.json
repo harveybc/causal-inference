@@ -1,0 +1,45 @@
+{
+  "initiative": "minimal_m5phet_causal_provider",
+  "current_stage": "S14_RELEASE_OPERATION",
+  "stages": {
+    "S0_DISCOVERY": "passed",
+    "S1_REQUIREMENTS": "passed",
+    "S2_USE_CASES": "passed",
+    "S3_ACCEPTANCE_TEST_DESIGN": "passed",
+    "S4_ARCHITECTURE": "passed",
+    "S5_SYSTEM_TEST_DESIGN": "passed",
+    "S6_COMPONENT_DESIGN": "passed",
+    "S7_INTEGRATION_TEST_DESIGN": "passed",
+    "S8_UNIT_TEST_DESIGN": "passed",
+    "S9_UNIT_IMPLEMENTATION": "passed",
+    "S10_INTEGRATION_VERIFICATION": "passed",
+    "S11_SYSTEM_VERIFICATION": "passed",
+    "S12_ALPHA_ACCEPTANCE": "passed",
+    "S13_BETA_ACCEPTANCE": "deferred",
+    "S14_RELEASE_OPERATION": "passed_local_handoff"
+  },
+  "traceability": "docs/CAUSAL_PROVIDER_DESIGN.md",
+  "artifacts": ["provider/tests/test_provider.py", "provider/tests/test_chat.py", "provider/pyproject.toml", "docs/M5PHET_CAUSAL_PROVIDER.md"],
+  "evidence": [
+    "Red: pytest provider/tests -q, exit 2, ModuleNotFoundError for causal_inference_provider before implementation.",
+    "Red: pytest provider/tests/test_chat.py -q, exit 2, missing chat adapter before implementation.",
+    "77 focused tests passed in 5.90 seconds; real numerical engine, no numeric mocks.",
+    "Main Engine.execute read-only integration: OK with real payload; missing assumption produces per-output NOT_IDENTIFIED.",
+    "docs/CAUSAL_PROVIDER_ACCEPTANCE.json: 79 passing tests, fresh dependency-free serving environment, actual main environment probe."
+  ],
+  "reviewer": "implementing agent; independent review pending",
+  "accepted_requirements": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+  "next_allowed_actions": ["Main installs base provider into web environment", "Administrator prepares or allowlists fitted artifacts before service startup", "Main verifies browser rendering and outer refusal status"],
+  "blocked_actions": ["financial claims", "edit main checkout", "edit M5PHET", "implicit fit during infer"],
+  "open_decisions": ["Main owns outer NOT_IDENTIFIED status aggregation and browser acceptance; fitting is explicit CLI-only for this provider."],
+  "history": [
+    {"stage": "S0_DISCOVERY", "date": "2026-09-24", "event": "Read existing EconML/DoWhy script, root packaging, M5PHET interface; no project graph index available."},
+    {"stage": "S8_UNIT_TEST_DESIGN", "date": "2026-09-24", "event": "Recorded S0-S8 design and numeric/refusal tests before provider implementation."},
+    {"stage": "S9_UNIT_IMPLEMENTATION", "date": "2026-09-24", "event": "Captured expected red import; implemented provider in isolated distribution."},
+    {"stage": "S10_INTEGRATION_VERIFICATION", "date": "2026-09-24", "event": "Added chat adapter tests before implementation after main contract update; 77 focused tests pass. Real current M5PHET Engine.execute returns OK."},
+    {"stage": "S11_SYSTEM_VERIFICATION", "date": "2026-09-24", "event": "New empty venv installed package with constraints successfully; pip check clean; verified installed wheel outside source tree."},
+    {"stage": "S8_UNIT_TEST_DESIGN", "date": "2026-09-24", "event": "Main supplied newer dependency environment and allowlist requirement; captured two red tests before splitting optional fit dependencies and adding fixed administrator allowlist."},
+    {"stage": "S12_ALPHA_ACCEPTANCE", "date": "2026-09-24", "event": "79 tests passed in 6.40s. Fresh serving-only environment has package plus pip and returns OK. Actual main environment Engine.execute probe returns OK without installing/downgrading dependencies."},
+    {"stage": "S14_RELEASE_OPERATION", "date": "2026-09-24", "event": "Local provider handoff complete with exact install/fit/infer steps and evidence. Browser integration and outer status aggregation remain main-owned; no domain acceptance claimed."}
+  ]
+}
