@@ -293,9 +293,14 @@ class M5PHETCausalProvider:
                 continue
             if state.get("development") is not True:
                 continue
+            # The example must resolve against this provider's OWN slots: an example a person clicks and that is then
+            # refused teaches them the product is broken. It therefore names the study the way the slot declares it.
+            label = next((name for name, body in self._retained_studies().items()
+                          if body["digest"] == state["digest"]), None)
+            prompt = f"Report {label}, with its uncertainty." if label else CHAT_PROMPT
             examples.append({
                 "title": "SYNTHETIC/DEVELOPMENT: confounded ATE, known effect 2",
-                "prompt": CHAT_PROMPT, "data": deepcopy(state["population"]),
+                "prompt": prompt, "data": deepcopy(state["population"]),
                 "config": {"input": "json", "provider": self.name, "family": "causal_inference",
                            "output_kind": "causal_effect", "state": ref,
                            "as_of": datetime.now(timezone.utc).isoformat(),

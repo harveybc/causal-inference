@@ -235,11 +235,30 @@ def test_a_named_study_never_takes_an_attached_dataset(retained):
 
 
 def test_the_explicit_path_is_unchanged_when_nothing_is_resolved(retained):
+    """The literal prompt the explicit path has always accepted still works without any resolved parameter.
+
+    The shipped example no longer uses it: an example must resolve against this provider's own slots, so it names its
+    study the way the slot declares it. That path is covered by the test below."""
+    from causal_inference_provider.chat import CHAT_PROMPT
+
     provider = M5PHETCausalProvider(retained)
     sample, = provider.chat_examples()
-    request = provider.chat_request(sample["prompt"], sample["data"], sample["config"])
+    request = provider.chat_request(CHAT_PROMPT, sample["data"], sample["config"])
     assert provider.infer(request, provider.load(sample["config"]["state"]))["outputs"]["effect"]["status"] == "OK"
     with pytest.raises(ValueError, match="Unsupported prompt"):
         provider.chat_request("how did treatment change outcome?", sample["data"], sample["config"])
     with pytest.raises(ValueError, match="A question is required"):
         provider.chat_request("   ", "", chat_config(), parameters={"study": provider.chat_slots()[0]["allowed"][0]})
+
+
+def test_the_shipped_example_resolves_against_this_providers_own_slots(retained):
+    """An example a person clicks and that is then refused teaches them the product is broken."""
+    from m5phet.interpret import STATUS_OK, Interpreter, interpret
+
+    provider = M5PHETCausalProvider(retained)
+    sample, = provider.chat_examples()
+    resolution = interpret(sample["prompt"], provider.chat_slots(), interpreter=Interpreter(command="", environ={}))
+    assert resolution["status"] == STATUS_OK, resolution["why"]
+    request = provider.chat_request(sample["prompt"], sample["data"], sample["config"],
+                                    parameters=resolution["parameters"])
+    assert provider.infer(request, provider.load(sample["config"]["state"]))["outputs"]["effect"]["status"] == "OK"
