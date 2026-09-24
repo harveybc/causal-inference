@@ -1,5 +1,13 @@
 # Causal-Inference
 
+## Minimal M5PHET causal provider
+
+The real CPU-only ATE provider lives in the isolated `provider/` subproject.
+See [installation, explicit demo preparation and contract](docs/M5PHET_CAUSAL_PROVIDER.md).
+It requires caller-declared identifying assumptions and never fits during chat
+inference. The historical application instructions below are not the provider's
+installation path.
+
 ## Description
 
 Causal-Inference is a modular and extensible tool designed to transform datasets, such as economic calendars, into time series that reflect the causal influence of events on target variables like trend and volatility. It supports dynamic plugins for preprocessing, causal inference, and transformation, making it adaptable to a wide range of datasets and causal estimation methods. By leveraging advanced methods like Double Machine Learning, Causal Forests, and Meta-Learning, the tool provides robust and customizable pipelines for causal transformation tasks.
@@ -166,4 +174,3 @@ Contributions to the project are welcome! Please refer to the CONTRIBUTING.md fi
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
