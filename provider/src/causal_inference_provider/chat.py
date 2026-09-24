@@ -14,6 +14,7 @@ from .provider import CausalInferenceProvider, _digest
 CHAT_PROMPT = "Report the configured ATE and its uncertainty."
 UNCERTAINTY = "econml_statsmodels_HC1_normal"
 REF_PATTERN = re.compile(r"causal-ate:([a-f0-9]{64})")
+STUDY_SLOT = "study"
 
 
 def state_directory():
@@ -26,6 +27,29 @@ def _clock(value):
     if parsed.tzinfo is None:
         raise ValueError("An aware clock is required.")
     return parsed.astimezone(timezone.utc)
+
+
+def _study_label(config):
+    """The name a study already carries in its own identifying config, in the words a person would use to ask for it."""
+    return f"{config['estimand']} of {config['treatment']} on {config['outcome']}"
+
+
+def _study_aliases(body, label):
+    """Ordinary phrasings for one retained study.
+
+    Every phrasing names both roles, the study reference, or the artifact's own development marking. A phrase naming a
+    single column is deliberately absent: it would let a question about another study ("the effect of rainfall on
+    outcome") resolve to this one because one of its words happened to match."""
+    config = body["config"]
+    treatment, outcome = config["treatment"], config["outcome"]
+    aliases = [body["state_ref"], body["digest"], body["digest"][:12],
+               f"{treatment} on {outcome}",
+               f"effect of {treatment} on {outcome}",
+               f"average effect of {treatment} on {outcome}",
+               f"effect of {treatment} upon {outcome}"]
+    if body.get("development") is True:
+        aliases += ["demo study", "synthetic study", "development study"]
+    return [phrase for phrase in dict.fromkeys(aliases) if phrase != label]
 
 
 def save_study(core, directory, *, development=False):
@@ -156,26 +180,102 @@ class M5PHETCausalProvider:
                                 population=state["population"])
         return self._answer("OK", payload=state["result"]["payload"], population=state["population"])
 
-    def chat_request(self, prompt, data, config):
-        """Bounded report command, not natural-language causal identification."""
-        if not isinstance(prompt, str) or prompt.strip().casefold() != CHAT_PROMPT.casefold():
-            raise ValueError("Unsupported prompt. Use: " + CHAT_PROMPT)
+    def _retained_studies(self):
+        """Every study this provider can serve right now, keyed by label and read back from its own artifact.
+
+        A study whose artifact no longer loads is not offered: the vocabulary is what is retained, not what was fitted
+        once."""
+        loaded = []
+        for ref in self.capabilities()["known_states"]:
+            try:
+                loaded.append(self.load(ref))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        labels = [_study_label(body["config"]) for body in loaded]
+        studies = {}
+        for label, body in zip(labels, loaded):
+            # Two studies can share estimand and roles and differ in adjustments or level; both must stay nameable.
+            key = label if labels.count(label) == 1 else f"{label} ({body['digest'][:12]})"
+            studies[key] = body
+        return studies
+
+    def chat_slots(self):
+        """Declare the one thing a person chooses in ordinary words: which retained study to report.
+
+        The vocabulary is enumerated from the retained artifacts themselves, so a question is resolved against exactly
+        the studies this provider holds and every other name is refused. Nothing else here is enumerable. The estimand,
+        the treatment and outcome roles, the adjustment set, the assumptions, the confidence level and the population are
+        carried by the chosen study, not chosen by the person: the engine admits one estimand (ATE) and this adapter
+        never fits, so declaring them would either pose a question with a single answer or open a slot whose admissible
+        values cannot be listed. With nothing retained there is no vocabulary and no slot at all."""
+        studies = self._retained_studies()
+        if not studies:
+            return []
+        return [{"name": STUDY_SLOT, "type": "string", "allowed": sorted(studies),
+                 "aliases": {label: _study_aliases(body, label) for label, body in studies.items()}}]
+
+    def _selected_study(self, parameters, config):
+        """Resolve declared slot values to exactly one retained study, refusing any other value by name.
+
+        A study nobody retains is never replaced by the study that happens to be here: that substitution would answer a
+        question about another population with this one's number."""
+        if not isinstance(parameters, dict):
+            raise ValueError("Resolved parameters must be a mapping of declared slot values.")
+        studies = self._retained_studies()
+        if not studies:
+            raise ValueError("No fitted study is retained; explicitly fit one with the CLI before asking for a report.")
+        undeclared = sorted(str(name) for name in set(parameters) - {STUDY_SLOT})
+        if undeclared:
+            raise ValueError("Undeclared chat parameters: " + ", ".join(undeclared))
+        label = parameters.get(STUDY_SLOT)
+        if not isinstance(label, str) or label not in studies:
+            raise ValueError(f"No retained study is named {label!r}; this provider holds {sorted(studies)}.")
+        state = studies[label]
+        if config.get("state") and config["state"] != state["state_ref"]:
+            raise ValueError("The selected state reference is not the named study; say which one you mean.")
+        explicit = config.get("parameters")
+        if isinstance(explicit, dict) and explicit and explicit != state["config"]:
+            raise ValueError("Explicit parameters differ from the named study's identifying config.")
+        return state
+
+    def chat_request(self, prompt, data, config, parameters=None):
+        """Bounded report command, not natural-language causal identification.
+
+        `parameters` carries the workbench's already-resolved slot values, which can only SELECT one retained study: the
+        identification, the population and the availability clock still come from that study's artifact, and no word of
+        the question enters the request. Callers that resolve nothing keep the explicit path unchanged -- the exact
+        report command, an explicit identifying config and an explicit population reference."""
+        if parameters is None:
+            if not isinstance(prompt, str) or prompt.strip().casefold() != CHAT_PROMPT.casefold():
+                raise ValueError("Unsupported prompt. Use: " + CHAT_PROMPT)
+        elif not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("A question is required; resolved parameters do not stand in for one.")
         if not isinstance(config, dict) or any(config.get(k) != v for k, v in (
             ("provider", self.name), ("family", "causal_inference"), ("output_kind", "causal_effect"),
         )):
             raise ValueError("Select causal_inference / causal_effect explicitly.")
-        if not isinstance(config.get("parameters"), dict):
-            raise ValueError("Explicit identifying parameters are required.")
-        if not isinstance(data, dict):
-            raise ValueError("Chat needs a fitted population reference; raw datasets require the explicit fit CLI.")
-        state = self.load(config.get("state"))
+        if parameters is None:
+            if not isinstance(config.get("parameters"), dict):
+                raise ValueError("Explicit identifying parameters are required.")
+            if not isinstance(data, dict):
+                raise ValueError("Chat needs a fitted population reference; raw datasets require the explicit fit CLI.")
+            state = self.load(config.get("state"))
+            population, identifying = data, config["parameters"]
+        else:
+            state = self._selected_study(parameters, config)
+            population, identifying = state["population"], state["config"]
+            if isinstance(data, dict) and data:
+                if data != population:
+                    raise ValueError("The attached population is not the named study's fitted population.")
+            elif not (data is None or (isinstance(data, (str, list, tuple, dict)) and not data)):
+                raise ValueError("A named study reports its own population; raw datasets require the explicit fit CLI.")
         request = {
             "schema_version": "m5phet.task.draft2", "task_id": state["task_id"],
             "operation": "infer", "family": "causal_inference", "output_kind": "causal_effect",
-            "provider_ref": self.name, "fitted_state_ref": config["state"],
+            "provider_ref": self.name, "fitted_state_ref": state["state_ref"],
             "as_of": config.get("as_of") or datetime.now(timezone.utc).isoformat(),
-            "state": deepcopy(data), "population": deepcopy(data),
-            "parameters": deepcopy(config["parameters"]),
+            "state": deepcopy(population), "population": deepcopy(population),
+            "parameters": deepcopy(identifying),
             "input_schema": {"kind": "fitted_study_population_reference"},
             "output_schema": {"targets": ["effect"]},
             "execution_constraints": {"partial_results": False},
