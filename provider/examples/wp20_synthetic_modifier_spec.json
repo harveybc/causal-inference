@@ -1,0 +1,30 @@
+{
+  "schema": "m5phet.causal_study_spec.v1",
+  "study_id": "wp20-spec-modifier-v1",
+  "dataset": {
+    "id": "synthetic-modifier",
+    "columns": ["baseline", "confounder", "treatment", "outcome"]
+  },
+  "roles": {
+    "treatment": "treatment",
+    "outcome": "outcome",
+    "confounder": "confounder",
+    "baseline": "modifier"
+  },
+  "estimator": "LinearDML",
+  "nuisance": {"model_y": "lasso", "model_t": "lasso"},
+  "confidence_level": "0.95",
+  "identification": [
+    "sufficient_adjustment",
+    "pre_treatment_adjustment",
+    "consistency",
+    "no_interference",
+    "positivity",
+    "iid_sampling",
+    "effect_linear_in_modifiers",
+    "nuisance_models_correct"
+  ],
+  "decisions": [],
+  "provenance": "DEVELOPMENT",
+  "outcome_unit": "synthetic outcome units"
+}

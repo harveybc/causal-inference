@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 
 from . import questions as _questions
+from . import study_space as _space
 from .provider import CausalInferenceProvider, _digest
 
 
@@ -104,7 +105,7 @@ def _example_title(body):
     return f"{title}, known subgroup effects {subgroups}" if subgroups else title
 
 
-def save_study(core, directory, *, development=False, study_id=None, origin=None):
+def save_study(core, directory, *, development=False, study_id=None, origin=None, spec=None):
     """Persist only an already fitted result. Never performs or triggers fitting.
 
     A study may also be given a manifest: an identifier the person can say out loud, the provenance of its numbers, the
@@ -117,6 +118,8 @@ def save_study(core, directory, *, development=False, study_id=None, origin=None
         raise ValueError("A study identifier must be 3-64 lowercase characters from [a-z0-9._-].")
     if origin is not None and study_id is None:
         raise ValueError("An origin belongs to an identified study; give the study an identifier.")
+    if spec is not None and study_id is None:
+        raise ValueError("A spec belongs to an identified study; give the study an identifier.")
     result = core.infer()
     diagnostics = result["payload"]["diagnostics"]
     config = core.state["config"]
@@ -144,6 +147,11 @@ def save_study(core, directory, *, development=False, study_id=None, origin=None
             "uncertainty_method": diagnostics["uncertainty_method"],
             "origin": deepcopy(origin),
         }
+        if spec is not None:
+            # the spec the study was fitted FROM, and the decision records that chose it, kept beside the numbers so a
+            # study can always be traced back to the choices -- and to whether a person or Laya made them
+            body["manifest"]["spec"] = deepcopy(spec)
+            body["manifest"]["decisions"] = list(spec.get("decisions") or [])
     raw = json.dumps(body, sort_keys=True, allow_nan=False).encode()
     digest = sha256(raw).hexdigest()
     directory = Path(directory)
@@ -178,7 +186,11 @@ class M5PHETCausalProvider:
             "provider": self.name,
             "backend": "EconML LinearDML / explicit offline fitted study",
             "operations": ["infer"], "families": ["causal_inference"],
-            "output_kinds": ["causal_effect"], "uncertainty_methods": [UNCERTAINTY],
+            "output_kinds": ["causal_effect"],
+            "uncertainty_methods": list(CausalInferenceProvider.capabilities()["uncertainty_methods"]),
+            # read-only: the configuration space a study is chosen FROM (WP20). Declared, never probed here -- serving
+            # imports no fit dependency -- and nothing in this adapter chooses from it or fits.
+            "study_space": _space.study_space(probe=_space.declared),
             "supported": [{"operation": "infer", "family": "causal_inference", "output_kind": "causal_effect"}],
             "fit_required": True, "known_states": list(self._known_states),
             "resource_limits": {"max_outputs": 1, "max_artifact_bytes": 1_000_000},
@@ -213,9 +225,10 @@ class M5PHETCausalProvider:
         return body | {"state_ref": state_ref, "digest": match[1]}
 
     @staticmethod
-    def _answer(status, reason=None, *, payload=None, population=None):
+    def _answer(status, reason=None, *, payload=None, population=None, uncertainty=UNCERTAINTY):
+        """One effect output. `uncertainty` names the method the STUDY carries, which is the estimator's own."""
         return {"outputs": {"effect": {"status": status, "why": reason,
-                                       "payload": deepcopy(payload), "uncertainty": UNCERTAINTY}},
+                                       "payload": deepcopy(payload), "uncertainty": uncertainty}},
                 "population": deepcopy(population)}
 
     def infer(self, request, state):
@@ -256,7 +269,9 @@ class M5PHETCausalProvider:
         if as_of < available:
             return self._answer("INPUT_UNAVAILABLE", "Study was not available at the requested clock.",
                                 population=state["population"])
-        return self._answer("OK", payload=state["result"]["payload"], population=state["population"])
+        payload = state["result"]["payload"]
+        return self._answer("OK", payload=payload, population=state["population"],
+                            uncertainty=payload["diagnostics"].get("uncertainty_method", UNCERTAINTY))
 
     def _retained_studies(self):
         """Every study this provider can serve right now, keyed by label and read back from its own artifact.

@@ -53,10 +53,21 @@ def _has_modifier(path):
     return bool((body.get("config") or {}).get("effect_modifiers"))
 
 
+def _study_id(path):
+    body = json.loads(path.read_text(encoding="utf-8"))
+    return ((body.get("manifest") or {}).get("study_id"))
+
+
+#: The study these tests are about: the one `prepare-demo --with-modifier` fits, by its own identifier. This machine may
+#: retain other studies fitted with a modifier -- a spec-fitted one, say -- and they are other studies with other
+#: numbers, so a fixture that means this one names it instead of trusting that it is the only one here.
+DEMO_MODIFIER = "demo-modifier-v1"
+
+
 @pytest.fixture
 def modifier_dir(tmp_path):
-    """Only the study fitted with an effect modifier, copied out of the live state directory."""
-    return _copy([p for p in artifacts() if _has_modifier(p)], tmp_path, "modifier")
+    """Only the demo study fitted with an effect modifier, copied out of the live state directory."""
+    return _copy([p for p in artifacts() if _study_id(p) == DEMO_MODIFIER], tmp_path, "modifier")
 
 
 @pytest.fixture
@@ -67,10 +78,10 @@ def ate_only_dir(tmp_path):
 
 @pytest.fixture
 def both_dir(tmp_path):
-    """Both studies at once -- what the running workbench serves, and where a wrong match would show."""
-    paths = artifacts()
+    """The two studies `prepare-demo` fits, at once -- where a wrong match between them would show."""
+    paths = [p for p in artifacts() if _study_id(p) == DEMO_MODIFIER or not _has_modifier(p)]
     if not any(_has_modifier(p) for p in paths) or not any(not _has_modifier(p) for p in paths):
-        pytest.skip("this machine does not hold both an ATE-only and an effect-modifier study")
+        pytest.skip("this machine does not hold both an ATE-only and the demo effect-modifier study")
     return _copy(paths, tmp_path, "both")
 
 

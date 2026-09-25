@@ -16,6 +16,8 @@ import json
 import math
 import warnings
 
+from . import study_space as _space
+
 ASSUMPTIONS = (
     "sufficient_adjustment", "pre_treatment_adjustment", "consistency",
     "no_interference", "positivity", "iid_sampling", "constant_effect",
@@ -31,6 +33,8 @@ MIN_PER_CELL = 20
 MAX_ROWS = 10_000
 MAX_ADJUSTMENTS = 20
 SEED = 1729
+#: The estimator a study that declares none is fitted with: what this engine has always used.
+DEFAULT_ESTIMATOR = "LinearDML"
 
 
 def assumptions_for(estimand):
@@ -68,6 +72,9 @@ class CausalInferenceProvider:
 
     @staticmethod
     def capabilities():
+        # the DECLARED space (nothing imported here: capabilities is on the serving path) -- the estimators and
+        # nuisance models a study may name, and the uncertainty method each of them makes the study carry
+        space = _space.study_space(probe=_space.declared)
         return {
             "provider": "causal_inference",
             "schema_version": "causal-inference.provider.v1",
@@ -82,7 +89,10 @@ class CausalInferenceProvider:
             "required_assumptions": list(ASSUMPTIONS),
             "required_assumptions_cate": list(MODIFIER_ASSUMPTIONS),
             "effect_modifier_levels": list(MODIFIER_LEVELS),
-            "uncertainty_methods": ["econml_statsmodels_HC1_normal"],
+            "uncertainty_methods": sorted({"econml_statsmodels_HC1_normal"} | {
+                detail["uncertainty_method"] for detail in space["estimators"]["detail"].values()}),
+            "estimators": [key for key, _ in space["estimators"]["options"]],
+            "nuisance_models": [key for key, _ in space["nuisance_models"]["options"]],
             "limits": {"min_rows": 100, "max_rows": MAX_ROWS,
                        "max_adjustments": MAX_ADJUSTMENTS, "min_per_arm": 20,
                        "max_effect_modifiers": MAX_MODIFIERS, "min_per_subgroup_arm": MIN_PER_CELL,
@@ -109,10 +119,13 @@ class CausalInferenceProvider:
         if not isinstance(config, dict):
             return self._refuse("INVALID_INPUT", "Config must be a mapping, not text.")
         allowed = {"estimand", "treatment", "outcome", "adjustments", "unit", "assumptions", "alpha",
-                   "effect_modifiers"}
+                   "effect_modifiers", "estimator", "nuisance"}
         if set(config) - allowed:
             return self._refuse("INVALID_INPUT", "Unknown config fields; no implicit interpretation is supported.")
-        if not allowed.difference({"alpha", "assumptions", "effect_modifiers"}).issubset(config):
+        # `estimator` and `nuisance` join `alpha` and `effect_modifiers` as the fields a study may leave out: a study
+        # that names neither is fitted with this engine's default pair, exactly as every study fitted before them was.
+        optional = {"alpha", "assumptions", "effect_modifiers", "estimator", "nuisance"}
+        if not allowed.difference(optional).issubset(config):
             return self._refuse("INVALID_INPUT", "Explicit estimand, roles, adjustment list and outcome unit are required.")
         if config["estimand"] not in ESTIMANDS:
             return self._refuse("UNSUPPORTED_TASK", "Only binary-treatment (1 versus 0) constant-effect ATE and CATE "
@@ -150,6 +163,31 @@ class CausalInferenceProvider:
             return self._refuse("NOT_IDENTIFIED", "All identifying and model assumptions must be explicitly declared true.")
         if set(assumptions) != set(required):
             return self._refuse("INVALID_INPUT", "Unknown assumptions cannot be interpreted by this provider.")
+        # The estimator and the nuisance models are OPTIONAL and declared: a study that names neither is fitted with
+        # this engine's own default (LinearDML over unpenalised linear nuisances), which is what every study retained
+        # before the configuration space existed declares, and its identifying config is unchanged by their existence.
+        # A study that names them is checked against the DECLARED space here -- without importing anything, because
+        # this method is on the serving path -- and built from it in fit().
+        space = _space.study_space(probe=_space.declared)
+        chosen = config.get("estimator")
+        if chosen is not None and chosen not in (space["estimators"]["detail"] or {}):
+            return self._refuse("UNSUPPORTED_TASK", f"Unknown estimator {chosen!r}; this provider declares "
+                                                    f"{[key for key, _ in space['estimators']['options']]}.")
+        if chosen is not None:
+            supported = space["estimators"]["detail"][chosen]["estimands"]
+            if config["estimand"] not in supported:
+                return self._refuse("UNSUPPORTED_TASK", f"Estimator {chosen} serves {supported} and this study "
+                                                        f"declares estimand {config['estimand']}.")
+        nuisance = config.get("nuisance")
+        if nuisance is not None:
+            offered = [key for key, _ in space["nuisance_models"]["options"]]
+            if not isinstance(nuisance, dict) or set(nuisance) != {"model_y", "model_t"}:
+                return self._refuse("INVALID_INPUT", "Nuisance models are declared as model_y and model_t.")
+            unknown = sorted({nuisance[role] for role in ("model_y", "model_t") if nuisance[role] not in offered},
+                             key=str)
+            if unknown:
+                return self._refuse("UNSUPPORTED_TASK", f"Unknown nuisance model(s) {unknown}; this provider declares "
+                                                        f"{offered}.")
         alpha = config.get("alpha", 0.05)
         if type(alpha) not in (int, float) or not math.isfinite(alpha) or not 0 < alpha < 1:
             return self._refuse("INVALID_INPUT", "alpha must be a finite number strictly between 0 and 1.")
@@ -209,8 +247,6 @@ class CausalInferenceProvider:
                                                           f"{MIN_PER_CELL} treated and {MIN_PER_CELL} control "
                                                           f"observations; no subgroup is pooled to reach it.")
 
-        from econml.dml import LinearDML
-        from econml.inference import StatsModelsInference
         from sklearn.exceptions import ConvergenceWarning
         from sklearn.linear_model import LinearRegression, LogisticRegression
         from sklearn.model_selection import StratifiedKFold, cross_val_predict
@@ -232,17 +268,24 @@ class CausalInferenceProvider:
                     w = np.ones((len(t), 1))
                 # the modifiers are part of the nuisance design too, exactly as the estimator uses them
                 nuisance = np.column_stack([w, x]) if x.size else w
-                model_t = make_pipeline(StandardScaler(), LogisticRegression(penalty=None, max_iter=1000))
+                # the nuisance pair: the declared choice when the config makes one, else this engine's default --
+                # unpenalised linear models, the pair every study fitted before the space existed was fitted with
+                declared_nuisance = cfg.get("nuisance")
+                if declared_nuisance:
+                    model_y = _space.build_nuisance(declared_nuisance["model_y"], "model_y")
+                    model_t = _space.build_nuisance(declared_nuisance["model_t"], "model_t")
+                else:
+                    model_y = make_pipeline(StandardScaler(), LinearRegression())
+                    model_t = make_pipeline(StandardScaler(), LogisticRegression(penalty=None, max_iter=1000))
                 cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
                 propensity = cross_val_predict(model_t, nuisance, t, cv=cv, method="predict_proba", n_jobs=1)[:, 1]
                 pmin, pmax = float(propensity.min()), float(propensity.max())
                 if not np.isfinite(propensity).all() or pmin < 0.05 or pmax > 0.95:
                     return self._refuse("NOT_IDENTIFIED", "Cross-fitted propensity screen failed [0.05, 0.95]; no trimming or clipping applied.")
-                model = LinearDML(
-                    model_y=make_pipeline(StandardScaler(), LinearRegression()),
-                    model_t=model_t, discrete_treatment=True, cv=cv, random_state=SEED,
-                )
-                model.fit(y, t, X=(x if x.size else None), W=w, inference=StatsModelsInference(cov_type="HC1"))
+                model, inference, estimator_detail = _space.build_estimator(
+                    cfg.get("estimator") or DEFAULT_ESTIMATOR, model_y=model_y, model_t=model_t, cv=cv,
+                    random_state=SEED)
+                model.fit(y, t, X=(x if x.size else None), W=w, inference=inference)
                 # the average effect of a heterogeneous study is the mean of its conditional effects over the very rows
                 # it was fitted on, which is why the fitted modifier matrix is passed back in here
                 population = {"X": x} if x.size else {}
@@ -288,8 +331,8 @@ class CausalInferenceProvider:
             "unit": cfg["unit"], "assumptions": sorted(cfg["assumptions"]),
             "diagnostics": {
                 "identification": "conditional_on_user_assumptions",
-                "engine": "econml.dml.LinearDML",
-                "uncertainty_method": "econml_statsmodels_HC1_normal",
+                "engine": f"{estimator_detail['module']}.{estimator_detail['class']}",
+                "uncertainty_method": estimator_detail["uncertainty_method"],
                 "confidence_level": 1 - cfg["alpha"],
                 "contrast": {"control": 0, "treated": 1},
                 "n_rows": len(t), "n_treated": n_treated, "n_control": len(t) - n_treated,
