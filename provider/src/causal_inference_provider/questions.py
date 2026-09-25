@@ -146,6 +146,8 @@ def ate_answer(body):
         "state_ref": body["state_ref"],
         "development": body.get("development") is True,
     }
+    if body.get("identification_caveat"):
+        answer["identification_caveat"] = body["identification_caveat"]
     if "p_value" in payload:
         answer["p_value"] = payload["p_value"]
     else:
@@ -249,6 +251,8 @@ def cate_answer(body, expression):
         "state_ref": body["state_ref"],
         "development": body.get("development") is True,
     }
+    if body.get("identification_caveat"):
+        answer["identification_caveat"] = body["identification_caveat"]
     answer["not_carried"] = {"p_value": NO_P_VALUE}
     return answer
 

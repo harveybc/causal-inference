@@ -151,6 +151,11 @@ def save_study(core, directory, *, development=False, study_id=None, origin=None
         "population": {"data_sha256": diagnostics["data_sha256"], "n_rows": diagnostics["n_rows"]},
         "result": result,
     }
+    # a caveat the spec declared travels with the study, at the top level, so every answer built from this artifact
+    # can carry it without knowing anything about specs
+    caveat = (spec or {}).get("identification_caveat")
+    if caveat:
+        body["identification_caveat"] = caveat
     if study_id is not None:
         body["manifest"] = {
             "study_id": study_id,

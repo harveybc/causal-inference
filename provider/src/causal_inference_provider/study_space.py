@@ -31,6 +31,20 @@ SPACE_SCHEMA = "m5phet.causal_study_space.v1"
 #: with a declared modifier. The engine's own vocabulary, repeated here so an option can name it.
 ATE, CATE = "ATE", "CATE"
 
+#: What the treatment column IS. `binary` is the 0/1 intervention this engine was built around and stays the default,
+#: so every study fitted before this dimension existed declares exactly what it always did. `continuous` is the
+#: treatment WP22 asks for -- a standardized calendar surprise, which has no arms to compare and whose effect is read
+#: per one unit of it. The two are not interchangeable anywhere: a continuous treatment has no propensity to screen,
+#: its nuisance model is a regression rather than a classification, and its contrast is a step of one unit rather than
+#: a switch between two arms. An estimator is offered for a kind only when this adapter builds and verifies it for
+#: that kind, which is why the declaration is per estimator and not global.
+BINARY, CONTINUOUS = "binary", "continuous"
+
+_TREATMENT_KINDS = (
+    (BINARY, "A 0/1 intervention; the effect is the contrast between the two arms"),
+    (CONTINUOUS, "A real-valued treatment; the effect is read per one unit of it, from 0 to 1"),
+)
+
 #: The seed every declared estimator and every randomised nuisance model is built with, so two fits of one spec agree.
 SEED = 1729
 
@@ -44,25 +58,27 @@ BOOTSTRAP_SAMPLES = 40
 _ESTIMATORS = (
     {"key": "LinearDML", "module": "econml.dml", "class": "LinearDML",
      "label": "Double machine learning with a linear final model and HC1 robust intervals",
-     "estimands": (ATE, CATE), "inference": "statsmodels_HC1",
+     "estimands": (ATE, CATE), "treatments": (BINARY, CONTINUOUS), "inference": "statsmodels_HC1",
      "uncertainty_method": "econml_statsmodels_HC1_normal"},
     {"key": "CausalForestDML", "module": "econml.dml", "class": "CausalForestDML",
      "label": "Causal forest final model with bootstrap-of-little-bags intervals",
      # a causal forest is fitted ON the modifiers: EconML refuses `X=None`, so this estimator serves a conditional
      # study and has nothing to say about a study that declares no modifier at all
-     "estimands": (CATE,), "inference": "blb",
+     "estimands": (CATE,), "treatments": (BINARY, CONTINUOUS), "inference": "blb",
      "uncertainty_method": "econml_blb_normal"},
     {"key": "DRLearner", "module": "econml.dr", "class": "DRLearner",
      "label": "Doubly robust learner (propensity and outcome regression) with bootstrap intervals",
-     "estimands": (ATE, CATE), "inference": "bootstrap",
+     # a doubly robust learner is built on a PROPENSITY, and a continuous treatment has none; EconML's own DRLearner
+     # requires a discrete treatment, so this adapter declares it for the binary kind and for nothing else
+     "estimands": (ATE, CATE), "treatments": (BINARY,), "inference": "bootstrap",
      "uncertainty_method": "econml_bootstrap_pivot"},
     {"key": "SparseLinearDML", "module": "econml.dml", "class": "SparseLinearDML",
      "label": "Double machine learning with a debiased-lasso final model and its normal intervals",
-     "estimands": (ATE, CATE), "inference": "debiasedlasso",
+     "estimands": (ATE, CATE), "treatments": (BINARY, CONTINUOUS), "inference": "debiasedlasso",
      "uncertainty_method": "econml_debiasedlasso_normal"},
     {"key": "DML", "module": "econml.dml", "class": "DML",
      "label": "Double machine learning with an explicit linear final model and bootstrap intervals",
-     "estimands": (ATE, CATE), "inference": "bootstrap",
+     "estimands": (ATE, CATE), "treatments": (BINARY, CONTINUOUS), "inference": "bootstrap",
      "uncertainty_method": "econml_bootstrap_pivot"},
 )
 
@@ -97,7 +113,8 @@ _NUISANCE_MODELS = (
 #: The role every column of the dataset is given. Exactly the five WP20 declares, and the whole vocabulary of a role
 #: choice: a column is the treatment, the outcome, something adjusted for, something the effect varies with, or left out.
 _ROLES = (
-    ("treatment", "The intervention whose effect is asked about (binary, coded 0/1)"),
+    ("treatment", "The intervention whose effect is asked about (binary 0/1, or real-valued when the spec declares "
+                  "the continuous treatment kind)"),
     ("outcome", "The variable the effect is measured on"),
     ("confounder", "Adjusted for: it moves both the treatment and the outcome"),
     ("modifier", "The effect varies with it; the study reports an effect per level (binary, coded 0/1)"),
@@ -175,6 +192,7 @@ def study_space(*, probe=importable):
             "options": _options(estimators),
             "detail": {entry["key"]: {"class": f"{entry['module']}.{entry['class']}",
                                       "estimands": list(entry["estimands"]),
+                                      "treatments": list(entry["treatments"]),
                                       "inference": entry["inference"],
                                       "uncertainty_method": entry["uncertainty_method"]}
                        for entry in estimators},
@@ -188,6 +206,16 @@ def study_space(*, probe=importable):
             "used_for": [["model_y", "The outcome regression"], ["model_t", "The treatment classification"]],
         },
         "roles": {"options": [[key, label] for key, label in _ROLES]},
+        "treatment_kinds": {
+            "options": [[key, label] for key, label in _TREATMENT_KINDS],
+            "default": BINARY,
+            "reading": ("The kind is a property of the treatment COLUMN, and every estimator declares the kinds this "
+                        "adapter builds it for; a spec that declares none is binary, which is what every study "
+                        "fitted before this dimension existed was."),
+            "served_by": {key: [entry["key"] for entry in _ESTIMATORS
+                                if key in entry["treatments"] and probe(entry["module"], entry["class"])]
+                          for key, _ in _TREATMENT_KINDS},
+        },
         "identification_assumptions": {
             "options": [[key, label] for key, label in _ASSUMPTIONS],
             # which of them a study of each estimand must declare -- all of them and nothing else
@@ -226,11 +254,14 @@ def confidence_level_value(key, space=None):
 # --- building what was chosen (the fit interpreter only) ---------------------------------------------------------
 
 
-def build_nuisance(key, role):
+def build_nuisance(key, role, *, treatment_kind=BINARY):
     """The scikit-learn estimator a declared nuisance key stands for, in the role it is asked for.
 
-    `role` is `model_y` (the outcome regression) or `model_t` (the treatment classification). The declared parameter
-    point is passed verbatim; the penalised linear models are wrapped in the standardiser they are declared on."""
+    `role` is `model_y` (the outcome regression) or `model_t` (the treatment model). For a binary treatment the
+    treatment model is the declared CLASSIFIER, because what is modelled is the probability of an arm; for a
+    continuous treatment there are no arms and no probability, so it is the declared REGRESSOR -- the same key, the
+    same parameter point, the other form the key already declares. The declared parameters are passed verbatim; the
+    penalised linear models are wrapped in the standardiser they are declared on."""
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
@@ -240,20 +271,30 @@ def build_nuisance(key, role):
                          f"{[candidate['key'] for candidate in _NUISANCE_MODELS]}.")
     if role not in ("model_y", "model_t"):
         raise ValueError("A nuisance model is built for `model_y` or `model_t`.")
-    declaration = entry["regressor"] if role == "model_y" else entry["classifier"]
+    if treatment_kind not in (BINARY, CONTINUOUS):
+        raise ValueError(f"{treatment_kind!r} is not a declared treatment kind; the declared ones are "
+                         f"{[key for key, _ in _TREATMENT_KINDS]}.")
+    regression = role == "model_y" or treatment_kind == CONTINUOUS
+    declaration = entry["regressor"] if regression else entry["classifier"]
     model = _import_class(declaration["module"], declaration["class"])(**declaration["parameters"])
     return make_pipeline(StandardScaler(), model) if entry["standardize"] else model
 
 
-def build_estimator(key, *, model_y, model_t, cv, random_state=SEED):
+def build_estimator(key, *, model_y, model_t, cv, random_state=SEED, treatment_kind=BINARY):
     """The EconML estimator a declared key stands for, together with the inference it is fitted with.
 
     Returns `(estimator, inference, detail)`. The inference is chosen per estimator and declared in the space, because
-    it is what decides whether the study can carry an interval -- and this engine releases no estimate without one."""
+    it is what decides whether the study can carry an interval -- and this engine releases no estimate without one.
+    `treatment_kind` is passed through to EconML as `discrete_treatment`, and an estimator this adapter does not
+    declare for that kind is refused here by name rather than built and hoped for."""
     entry = next((candidate for candidate in _ESTIMATORS if candidate["key"] == key), None)
     if entry is None:
         raise ValueError(f"{key!r} is not a declared estimator; the declared ones are "
                          f"{[candidate['key'] for candidate in _ESTIMATORS]}.")
+    if treatment_kind not in entry["treatments"]:
+        raise ValueError(f"{key!r} is declared for the treatment kind(s) {list(entry['treatments'])} and this study "
+                         f"declares {treatment_kind!r}.")
+    discrete = treatment_kind == BINARY
     factory = _import_class(entry["module"], entry["class"])
     if entry["inference"] == "statsmodels_HC1":
         from econml.inference import StatsModelsInference
@@ -268,8 +309,8 @@ def build_estimator(key, *, model_y, model_t, cv, random_state=SEED):
     elif entry["key"] == "DML":
         from sklearn.linear_model import LinearRegression
         estimator = factory(model_y=model_y, model_t=model_t, model_final=LinearRegression(fit_intercept=False),
-                            discrete_treatment=True, cv=cv, random_state=random_state)
+                            discrete_treatment=discrete, cv=cv, random_state=random_state)
     else:
-        estimator = factory(model_y=model_y, model_t=model_t, discrete_treatment=True, cv=cv,
+        estimator = factory(model_y=model_y, model_t=model_t, discrete_treatment=discrete, cv=cv,
                             random_state=random_state)
     return estimator, inference, deepcopy(entry)
