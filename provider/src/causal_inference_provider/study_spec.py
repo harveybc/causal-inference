@@ -59,13 +59,17 @@ INAPPLICABLE_ASSUMPTION = "INAPPLICABLE_ASSUMPTION"
 INCOMPLETE_IDENTIFICATION = "INCOMPLETE_IDENTIFICATION"
 NOT_IDENTIFIED = "NOT_IDENTIFIED"
 UNKNOWN_CONFIDENCE_LEVEL = "UNKNOWN_CONFIDENCE_LEVEL"
+UNKNOWN_TREATMENT_KIND = "UNKNOWN_TREATMENT_KIND"
+ESTIMATOR_HAS_NO_TREATMENT_KIND = "ESTIMATOR_HAS_NO_TREATMENT_KIND"
 UNKNOWN_PROVENANCE = "UNKNOWN_PROVENANCE"
 UNKNOWN_DATASET = "UNKNOWN_DATASET"
 MALFORMED_DECISION_DIGEST = "MALFORMED_DECISION_DIGEST"
 
-#: The fields a spec may carry. `study_id` and `outcome_unit` are optional labels; everything else is required.
+#: The fields a spec may carry. `study_id`, `outcome_unit` and `treatment_kind` are optional; everything else is
+#: required. An absent `treatment_kind` is `binary`, which is what every spec written before that dimension existed
+#: meant -- so adding the field changes no study that does not name it.
 SPEC_FIELDS = ("schema", "dataset", "roles", "estimator", "nuisance", "confidence_level", "identification",
-               "decisions", "provenance", "study_id", "outcome_unit")
+               "decisions", "provenance", "study_id", "outcome_unit", "treatment_kind", "identification_caveat")
 
 
 class SpecRefused(ValueError):
@@ -148,7 +152,7 @@ def validate_spec(spec, space=None):
                               "names none.")
     if len(grouped["treatment"]) > 1:
         _refuse(TWO_TREATMENTS, f"the columns {sorted(grouped['treatment'])} are all given the treatment role; this "
-                                f"engine estimates the effect of exactly one binary treatment.")
+                                f"engine estimates the effect of exactly one treatment column.")
     if not grouped["outcome"]:
         _refuse(NO_OUTCOME, "no column is the outcome; an effect is an effect on something, and this spec names "
                             "nothing.")
@@ -159,11 +163,24 @@ def validate_spec(spec, space=None):
         _refuse(TWO_MODIFIERS, f"the columns {sorted(grouped['modifier'])} are all given the modifier role; this "
                                f"engine reports an effect per level of exactly one binary modifier.")
 
+    kinds = space.get("treatment_kinds") or {"options": [], "default": "binary"}
+    declared_kinds = [key for key, _ in kinds["options"]]
+    treatment_kind = spec.get("treatment_kind", kinds["default"])
+    if treatment_kind not in declared_kinds:
+        _refuse(UNKNOWN_TREATMENT_KIND, f"{treatment_kind!r} is not a treatment kind this space declares; it declares "
+                                        f"{declared_kinds}, and a kind it cannot read it cannot fit.")
+
     estimator = spec.get("estimator")
     detail = (space["estimators"]["detail"] or {}).get(estimator) if isinstance(estimator, str) else None
     if detail is None:
         _refuse(UNKNOWN_ESTIMATOR, f"{estimator!r} is not an estimator this space offers; it offers "
                                    f"{[key for key, _ in space['estimators']['options']]}.")
+    served = list(detail.get("treatments") or [])
+    if treatment_kind not in served:
+        _refuse(ESTIMATOR_HAS_NO_TREATMENT_KIND,
+                f"this spec declares a {treatment_kind} treatment and estimator {estimator!r} is declared for "
+                f"{served}; the estimators this space offers for a {treatment_kind} treatment are "
+                f"{(kinds.get('served_by') or {}).get(treatment_kind, [])}.")
     estimand = "CATE" if grouped["modifier"] else "ATE"
     if estimand == "CATE" and "CATE" not in detail["estimands"]:
         _refuse(ESTIMATOR_HAS_NO_CATE, f"column {grouped['modifier'][0]!r} is declared an effect modifier, but "
@@ -241,9 +258,19 @@ def validate_spec(spec, space=None):
     unit = spec.get("outcome_unit")
     if unit is not None and (not isinstance(unit, str) or not unit.strip() or len(unit) > 128):
         _refuse(MALFORMED_SPEC, "`outcome_unit` is a nonempty string of at most 128 characters.")
+    # What the DATA cannot deliver, in the words of whoever built it, carried verbatim onto every answer this study
+    # ever gives. `identification` above is the list of assumptions the engine checks it declares; this is the thing
+    # no assumption list can express -- an observation that was never made, a clock nobody read. It is copied and
+    # never summarised, because a caveat a reader has to go and look up is a caveat that gets dropped.
+    caveat = spec.get("identification_caveat")
+    if caveat is not None and (not isinstance(caveat, str) or not caveat.strip() or len(caveat) > 4096):
+        _refuse(MALFORMED_SPEC, "`identification_caveat` is a nonempty string of at most 4096 characters: what the "
+                                "data could not deliver, in the words of whoever built it.")
 
     normalised = deepcopy(spec)
     normalised["confidence_level"] = level
+    if "treatment_kind" in normalised or treatment_kind != kinds["default"]:
+        normalised["treatment_kind"] = treatment_kind
     return normalised
 
 
@@ -274,6 +301,11 @@ def config_from_spec(spec, space=None):
         "estimator": spec["estimator"],
         "nuisance": {"model_y": spec["nuisance"]["model_y"], "model_t": spec["nuisance"]["model_t"]},
     }
+    # the DEFAULT kind stays absent from the identifying config: its digest is the task identity of every study
+    # already retained, and a field that means what its absence already meant would rename all of them
+    kind = spec.get("treatment_kind")
+    if kind is not None and kind != (space or _space.study_space(probe=_space.declared))["treatment_kinds"]["default"]:
+        config["treatment_kind"] = kind
     if modifiers:
         config["effect_modifiers"] = modifiers
     return config
