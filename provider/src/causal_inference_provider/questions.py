@@ -4,15 +4,18 @@ This is the causal side of the m5phet question envelope. A caller describes the 
 study by reference, or the population and causal graph that identify one -- and asks named questions of declared types.
 Every question is answered on its own, and a refusal is typed and carries its reason.
 
-The engine estimates one thing: a constant, average treatment effect, fitted explicitly beforehand. So `ate` is read
-from the retained artifact once the caller's graph is verified to be the study's own graph, and `cate` is declared so
-that it can be refused precisely -- not left undeclared, which would say only "unknown type", and not answered from the
-average, which would put a number where the study has none. Nothing here fits, subsets, or derives a statistic the
-artifact does not carry.
+The engine estimates a treatment effect, fitted explicitly beforehand: constant across units, or varying with one
+binary effect modifier the study declared. So `ate` is read from the retained artifact once the caller's graph is
+verified to be the study's own graph, and `cate` is answered only from a subgroup effect the artifact ALREADY CARRIES --
+computed when the study was fitted, for a level of a declared modifier. A subgroup a study does not carry is refused by
+name: not left undeclared, which would say only "unknown type"; not answered from the average, which would put a number
+where the study has none; and not obtained by subsetting the population and refitting, which no question does here.
+Nothing in this file fits, subsets, or derives a statistic the artifact does not carry.
 """
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import re
 
 # Refusal codes shared with m5phet.questions. They are repeated here by value so serving keeps no dependency on the
 # workbench package; a caller matches on the strings, and the strings are fixed there.
@@ -25,9 +28,19 @@ GRAPH_FIELDS = ("treatment", "outcome", "confounders")
 QUESTION_TYPES = {
     # An average effect carries no field of its own: the study named by the state is the whole question.
     "ate": {"required": [], "optional": []},
-    # A conditional effect names its condition; it is declared so that the refusal below can say exactly why.
-    "cate": {"required": ["condition"], "optional": []},
+    # A conditional effect names the subgroup it is about. Both spellings are accepted and mean the same thing:
+    # `subgroup` is the word this envelope uses, `condition` the one callers wrote first. Neither is required at this
+    # layer, so a cate question with no subgroup at all reaches the provider and is refused by it with the forms the
+    # named study actually carries -- which is more than "a field is missing" can say.
+    "cate": {"required": [], "optional": ["subgroup", "condition"]},
 }
+
+SUBGROUP_FIELDS = ("subgroup", "condition")
+#: The only subgroup form a study can answer: a declared effect modifier at one of its two declared levels. Anything
+#: else -- a cut of a continuous variable, an inequality, a conjunction -- is a different estimand, and a different
+#: estimand is a different study.
+SUBGROUP_FORM = "<effect modifier> == 0 or <effect modifier> == 1"
+SUBGROUP_PATTERN = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|=|!=|>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*")
 
 NO_P_VALUE = ("the retained artifact carries an estimate and an HC1 normal interval but no p-value; one is not derived "
               "from the interval here, because that would be a number the study never reported")
@@ -39,9 +52,17 @@ def refusal(kind, why, question_type):
 
 
 def study_graph(config):
-    """The causal graph a retained study was fitted with, in the caller's vocabulary."""
+    """The causal graph a retained study was fitted with, in the caller's vocabulary.
+
+    A declared effect modifier belongs in the confounder set: the estimator conditions on it exactly as it conditions on
+    an adjustment, and leaving it out would show a person a graph narrower than the one their number came from."""
     return {"treatment": config["treatment"], "outcome": config["outcome"],
-            "confounders": sorted(config["adjustments"])}
+            "confounders": sorted([*config["adjustments"], *(config.get("effect_modifiers") or [])])}
+
+
+def effect_modifiers(config):
+    """The effect modifiers a study was fitted with; empty for a constant-effect study."""
+    return list(config.get("effect_modifiers") or [])
 
 
 def graph_differences(graph, config):
@@ -86,18 +107,22 @@ def conclusion(config, payload):
 
 
 def ate_answer(body):
-    """The retained study's average effect, every value copied from the artifact."""
+    """The retained study's average effect, every value copied from the artifact.
+
+    A study fitted with an effect modifier still has an average effect -- the mean of its conditional effects over the
+    fitted population -- so this answers from it too, and says which estimand the study itself was fitted for."""
     payload = body["result"]["payload"]
     config = body["config"]
     answer = {
         "type": "ate", "status": "OK", "execution_authorized": False,
-        "estimand": payload["estimand"],
+        "estimand": "ATE", "study_estimand": payload["estimand"],
         "effect_size": payload["estimate"], "unit": payload["unit"],
         "confidence_interval": list(payload["interval"]),
         "confidence_level": payload["diagnostics"]["confidence_level"],
         "conclusion": conclusion(config, payload),
         "assumptions": list(payload["assumptions"]),
         "causal_graph": study_graph(config),
+        "effect_modifiers": effect_modifiers(config),
         "population": deepcopy(body["population"]),
         "diagnostics": deepcopy(payload["diagnostics"]),
         "state_ref": body["state_ref"],
@@ -111,20 +136,116 @@ def ate_answer(body):
 
 
 def cate_refusal(body, condition):
+    """Why a constant-effect study cannot answer a conditional question. Unchanged in substance: a study fitted without
+    an effect modifier has no subgroup effect, and inference does not make one."""
     config = body["config"]
     why = (f"the retained study estimates an average effect ({config['estimand']} of {config['treatment']} on "
            f"{config['outcome']}, constant across units) and was not fitted with an effect modifier, so a conditional "
            f"effect under {condition!r} cannot be read from it, and it is not derived by subsetting the population and "
            f"refitting during inference; answering this needs a study fitted explicitly with that modifier declared "
-           f"(and with a heterogeneous-effect estimand), which this engine does not offer today.")
+           f"and a heterogeneous-effect estimand -- this provider serves one when it is retained (`python -m "
+           f"causal_inference_provider prepare-demo --with-modifier` fits the synthetic development one), and it is "
+           f"named as its own study, not read out of this one.")
     return refusal(NOT_ESTIMABLE, why, "cate")
+
+
+def subgroup_asked(question):
+    """The subgroup expression a cate question names, under either declared spelling, or None."""
+    for field in SUBGROUP_FIELDS:
+        value = question.get(field)
+        if value is not None:
+            return value
+    return None
+
+
+def carried_subgroups(payload):
+    """The conditional effects a study's artifact carries, keyed by the subgroup each is about."""
+    return {entry["subgroup"]: entry for entry in (payload.get("conditional_effects") or [])
+            if isinstance(entry, dict) and isinstance(entry.get("subgroup"), str)}
+
+
+def subgroup_conclusion(config, payload, entry):
+    """A sentence about one subgroup's effect, read off the numbers the artifact carries for it."""
+    low, high = entry["interval"]
+    estimate = entry["estimate"]
+    level = payload["diagnostics"]["confidence_level"]
+    sign = "positive" if estimate > 0 else "negative" if estimate < 0 else "zero"
+    verdict = "excludes zero" if low > 0 or high < 0 else "includes zero, so the sign is not established"
+    return (f"Among the {entry['n_subgroup']} units with {entry['subgroup']}, the estimated effect of "
+            f"{config['treatment']} on {config['outcome']} is {sign}: {estimate:.4g} {payload['unit']} "
+            f"(contrast {payload['diagnostics']['contrast']['treated']} versus "
+            f"{payload['diagnostics']['contrast']['control']}); the {level:.0%} interval "
+            f"[{low:.4g}, {high:.4g}] {verdict}. This holds only under the declared assumptions: "
+            + ", ".join(payload["assumptions"]) + ".")
+
+
+def cate_answer(body, expression):
+    """One subgroup effect, copied from the artifact that carries it, or the typed refusal that says why not.
+
+    Four refusals, each about the study and not about the person: the study has no modifier at all; the question names no
+    subgroup; the subgroup names a variable this study did not declare as a modifier; the subgroup is a form -- an
+    inequality, another level -- the study does not carry. None of them is answered from the average, and none of them
+    causes a fit."""
+    config, payload = body["config"], body["result"]["payload"]
+    declared = effect_modifiers(config)
+    if not declared:
+        return cate_refusal(body, expression)
+    carried = carried_subgroups(payload)
+    forms = sorted(carried)
+    if not isinstance(expression, str) or not expression.strip():
+        return refusal(MALFORMED_QUESTION, f"a conditional-effect question must name its subgroup in `subgroup` (or "
+                                           f"`condition`), as {SUBGROUP_FORM}; study {body['state_ref']} carries "
+                                           f"{forms}", "cate")
+    match = SUBGROUP_PATTERN.fullmatch(expression)
+    if match is None:
+        return refusal(MALFORMED_QUESTION, f"the subgroup {expression!r} is not a form this provider reads; it reads "
+                                           f"{SUBGROUP_FORM}, and study {body['state_ref']} carries {forms}", "cate")
+    name, operator, level = match[1], match[2], match[3]
+    if name not in declared:
+        return refusal(NOT_ESTIMABLE, f"{name!r} is not an effect modifier this study declares; it was fitted with "
+                                      f"{declared} and carries {forms}. A subgroup of a variable a study was not fitted "
+                                      f"with cannot be read from it, and it is not obtained by subsetting the "
+                                      f"population and refitting during inference; that is a new study, fitted "
+                                      f"explicitly with {name!r} declared as a modifier", "cate")
+    asked = f"{name} == {int(float(level))}" if operator == "==" and float(level).is_integer() else None
+    if asked is None or asked not in carried:
+        return refusal(NOT_ESTIMABLE, f"study {body['state_ref']} carries the conditional effects {forms} and the "
+                                      f"subgroup {expression!r} is not one of them; a level or a comparison the study "
+                                      f"was not fitted for is a different estimand, and this provider does not compute "
+                                      f"one during inference", "cate")
+    entry = carried[asked]
+    answer = {
+        "type": "cate", "status": "OK", "execution_authorized": False,
+        "estimand": "CATE", "study_estimand": payload["estimand"],
+        "subgroup": asked, "modifier": entry["modifier"], "level": entry["level"],
+        "effect_size": entry["estimate"], "unit": payload["unit"],
+        "confidence_interval": list(entry["interval"]),
+        "confidence_level": payload["diagnostics"]["confidence_level"],
+        "n_subgroup": entry["n_subgroup"], "n_treated": entry["n_treated"], "n_control": entry["n_control"],
+        "conclusion": subgroup_conclusion(config, payload, entry),
+        "assumptions": list(payload["assumptions"]),
+        "causal_graph": study_graph(config),
+        "effect_modifiers": declared,
+        "population": deepcopy(body["population"]),
+        "diagnostics": deepcopy(payload["diagnostics"]),
+        "state_ref": body["state_ref"],
+        "development": body.get("development") is True,
+    }
+    answer["not_carried"] = {"p_value": NO_P_VALUE}
+    return answer
 
 
 def resolve_study(provider, state, data, as_of):
     """The one retained study the state names, or the typed refusal every question must carry.
 
     Returns (body, None) or (None, (kind, why)). A study that happens to be here never stands in for the one asked
-    about: a graph naming another treatment, outcome or adjustment set is refused with the difference spelled out."""
+    about: a graph naming another treatment, outcome or adjustment set is refused with the difference spelled out, and a
+    name nobody retains is refused with the names that are retained.
+
+    Three ways to name a study, in this order of authority: `state_ref` (its digest, which is exact), `study` (the name
+    the provider's own slot declares -- a study identifier or its estimand and roles -- which is what a router resolves a
+    sentence to), and `causal_graph` (the roles it was fitted with, which is what a person writing an envelope by hand
+    knows). A `causal_graph` given alongside either of the others is still checked against the study they named."""
     studies = list(provider._retained_studies().values())
     if not studies:
         return None, (STATE_REQUIRED, "no fitted study is retained by this provider; explicitly fit one "
@@ -136,11 +257,18 @@ def resolve_study(provider, state, data, as_of):
     if graph is not None and (not isinstance(graph, dict) or set(graph) - set(GRAPH_FIELDS)):
         return None, (MALFORMED_QUESTION, f"`causal_graph` must be a mapping with {list(GRAPH_FIELDS)}")
     ref = state.get("state_ref")
+    named = state.get("study")
     if ref is not None:
         candidates = [body for body in studies if body["state_ref"] == ref]
         if not candidates:
             return None, (STATE_REQUIRED, f"state_ref {ref!r} is not a study this provider retains; it holds "
                                           f"{[body['state_ref'] for body in studies]}")
+    elif named is not None:
+        candidates = provider.studies_named(named)
+        if not candidates:
+            return None, (STATE_REQUIRED, f"no retained study is named {named!r}; this provider holds "
+                                          f"{provider.study_names()}, and the study that is here is not an answer to a "
+                                          f"question about another one")
     elif graph is not None:
         candidates = [body for body in studies if not graph_differences(graph, body["config"])]
         if not candidates:
@@ -150,8 +278,9 @@ def resolve_study(provider, state, data, as_of):
                                          f"are {fitted} and the differences are {differences}; a study for this "
                                          f"graph must be fitted explicitly before its effect can be reported")
     else:
-        return None, (STATE_REQUIRED, "the state must name a study: `state_ref` (causal-ate:<digest>) or "
-                                      "`causal_graph` with treatment, outcome and confounders; this provider holds "
+        return None, (STATE_REQUIRED, "the state must name a study: `state_ref` (causal-ate:<digest>), `study` (one of "
+                                      + str(provider.study_names()) + ") or `causal_graph` with treatment, outcome and "
+                                      "confounders; this provider holds "
                                       + str([body["state_ref"] for body in studies]))
     dataset_id = state.get("dataset_id")
     if dataset_id is not None:
@@ -197,7 +326,7 @@ def answer_questions(provider, state, questions, data, as_of):
         if kind == "ate":
             out[name] = ate_answer(body)
         elif kind == "cate":
-            out[name] = cate_refusal(body, question.get("condition"))
+            out[name] = cate_answer(body, subgroup_asked(question))
         else:
             out[name] = refusal(NOT_ESTIMABLE, f"this provider declares {sorted(QUESTION_TYPES)} and cannot answer "
                                                f"{kind!r}", kind)

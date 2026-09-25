@@ -32,12 +32,23 @@ def main():
     fit.add_argument("--state-dir", type=Path, default=state_directory())
     demo = commands.add_parser("prepare-demo", help="Explicitly fit the SYNTHETIC/DEVELOPMENT study.")
     demo.add_argument("--state-dir", type=Path, default=state_directory())
+    demo.add_argument("--with-modifier", action="store_true",
+                      help="Fit the SYNTHETIC/DEVELOPMENT study that declares an effect modifier (estimand CATE), so "
+                           "conditional-effect questions about its declared subgroups can be answered. It is a second, "
+                           "separate study: nothing already retained is read, changed or replaced.")
     args = parser.parse_args()
     state_ref = None
+    saved = {"development": args.command == "prepare-demo"}
     try:
         if args.command == "prepare-demo":
-            from .example import example_config, example_data
-            config, data = example_config(), example_data()
+            if args.with_modifier:
+                from .example import (MODIFIER_STUDY_ID, modifier_example_config, modifier_example_data,
+                                      modifier_origin)
+                config, data = modifier_example_config(), modifier_example_data()
+                saved |= {"study_id": MODIFIER_STUDY_ID, "origin": modifier_origin()}
+            else:
+                from .example import example_config, example_data
+                config, data = example_config(), example_data()
         else:
             config = json.loads(args.config.read_text(encoding="utf-8"))
             data = None
@@ -49,7 +60,7 @@ def main():
             provider.fit(data)
             result = provider.infer()
             if result["status"] == "OK":
-                state_ref = save_study(provider, args.state_dir, development=args.command == "prepare-demo")
+                state_ref = save_study(provider, args.state_dir, **saved)
     except (OSError, ValueError, pd.errors.ParserError, pd.errors.ParserWarning):
         result = _response("INVALID_INPUT", "Cannot read the CSV/JSON input or write the study artifact.")
     print(json.dumps({"state_ref": state_ref, "result": result}, indent=2, allow_nan=False))

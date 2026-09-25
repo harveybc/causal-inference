@@ -13,6 +13,11 @@ from causal_inference_provider import CausalInferenceProvider
 from causal_inference_provider.chat import M5PHETCausalProvider, save_study
 from causal_inference_provider.example import example_config, example_data
 
+# Fitting is an optional extra of this package (`pip install .[fit]`). A venv that serves inference does not
+# carry EconML, and a suite that FAILED there would report an environment fact as a regression; the fit venv
+# runs every test below.
+pytest.importorskip("econml")
+
 
 @pytest.fixture
 def artifact(tmp_path):
@@ -20,6 +25,12 @@ def artifact(tmp_path):
     core.load(example_config())
     assert core.fit(example_data())["status"] == "OK"
     return tmp_path, save_study(core, tmp_path, development=True)
+
+
+def named(provider):
+    """The shipped example's prompt names its study the way the provider's own slot declares it, so the request built
+    from it carries the resolved slot value the workbench would have passed."""
+    return {"study": provider.chat_slots()[0]["allowed"][0]}
 
 
 def test_installed_entrypoint_no_implicit_fit(artifact, monkeypatch):
@@ -41,7 +52,7 @@ def test_installed_entrypoint_no_implicit_fit(artifact, monkeypatch):
     assert "SYNTHETIC/DEVELOPMENT" in sample["title"]
     assert sample["config"]["input"] == "json"
     assert len(json.dumps(sample["data"])) < 500
-    request = provider.chat_request(sample["prompt"], sample["data"], sample["config"])
+    request = provider.chat_request(sample["prompt"], sample["data"], sample["config"], parameters=named(provider))
     assert request["schema_version"] == "m5phet.task.draft2"
     assert request["operation"] == "infer"
     assert request["output_schema"] == {"targets": ["effect"]}
@@ -65,7 +76,7 @@ def test_request_binding_refusals(artifact, change, status):
     directory, ref = artifact
     provider = M5PHETCausalProvider(directory)
     sample, = provider.chat_examples()
-    request = provider.chat_request(sample["prompt"], sample["data"], sample["config"])
+    request = provider.chat_request(sample["prompt"], sample["data"], sample["config"], parameters=named(provider))
     state = provider.load(ref)
     if change == "assumption":
         del request["parameters"]["assumptions"]["sufficient_adjustment"]
@@ -124,7 +135,7 @@ from causal_inference_provider.chat import M5PHETCausalProvider
 import sys
 p = M5PHETCausalProvider(sys.argv[1])
 s, = p.chat_examples()
-r = p.chat_request(s["prompt"], s["data"], s["config"])
+r = p.chat_request(s["prompt"], s["data"], s["config"], parameters={"study": p.chat_slots()[0]["allowed"][0]})
 assert p.infer(r, p.load(s["config"]["state"]))["outputs"]["effect"]["status"] == "OK"
 '''
     result = subprocess.run([sys.executable, "-c", script, str(directory)],

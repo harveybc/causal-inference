@@ -32,12 +32,17 @@ def fitted_artifacts():
     """Study files this machine actually holds.
 
     The configured state directory comes first; the conventional one is also consulted because a desktop session can
-    redirect XDG_DATA_HOME away from where the demo was prepared."""
+    redirect XDG_DATA_HOME away from where the demo was prepared.
+
+    Only studies fitted WITHOUT an effect modifier are returned: every expectation below is about the constant-effect
+    study's label, aliases and refusals, and this machine also retains one fitted with a modifier."""
     directories = [state_directory(), Path.home() / ".local/share/causal-inference-m5phet/studies"]
     for directory in directories:
         found = sorted(path for path in directory.glob("*.json") if re.fullmatch(r"[a-f0-9]{64}", path.stem))
-        if found:
-            return found
+        constant = [path for path in found
+                    if not (json.loads(path.read_text(encoding="utf-8")).get("config") or {}).get("effect_modifiers")]
+        if constant:
+            return constant
     return []
 
 
@@ -253,7 +258,9 @@ def test_the_explicit_path_is_unchanged_when_nothing_is_resolved(retained):
 
 def test_the_shipped_example_resolves_against_this_providers_own_slots(retained):
     """An example a person clicks and that is then refused teaches them the product is broken."""
-    from m5phet.interpret import STATUS_OK, Interpreter, interpret
+    interpret_module = resolver()
+    STATUS_OK, Interpreter, interpret = (interpret_module.STATUS_OK, interpret_module.Interpreter,
+                                        interpret_module.interpret)
 
     provider = M5PHETCausalProvider(retained)
     sample, = provider.chat_examples()

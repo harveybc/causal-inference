@@ -13,7 +13,14 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THRE
 .venv-causal/bin/python -m pytest provider/tests -q
 export CAUSAL_INFERENCE_STATE_DIR="$PWD/.causal-studies"
 .venv-causal/bin/python -m causal_inference_provider prepare-demo --state-dir "$CAUSAL_INFERENCE_STATE_DIR"
+.venv-causal/bin/python -m causal_inference_provider prepare-demo --with-modifier --state-dir "$CAUSAL_INFERENCE_STATE_DIR"
 ```
+
+`--with-modifier` fits a SECOND, separate study (`study_id: demo-modifier-v1`,
+estimand `CATE`) that declares one binary effect modifier, so conditional-effect
+questions about its declared subgroups can be answered. It reads, changes and
+replaces nothing already retained; without it the first study is the only one, and
+a conditional question about it is refused with its reason.
 
 For an existing web environment, use that environment's Python to
 `pip install ./provider` instead. The base inference adapter is standard-library
@@ -55,16 +62,37 @@ change the directory or allowlist.
 - Output kinds: `["causal_effect"]`; output schema: `{"targets": ["effect"]}`
 - Uncertainty: `econml_statsmodels_HC1_normal`
 - State ref: `causal-ate:<artifact_sha256>`; load(state_ref) returns a mapping
-  containing digest, state_ref, task_id, available_at, config, population, result.
+  containing digest, state_ref, task_id, available_at, config, population, result,
+  and -- for a study fitted with an identifier -- manifest (study_id, provenance,
+  estimator, effect_modifiers, n, seed and, for synthetic data, the generating
+  equations and the effects they imply). task_id is `causal-<estimand>.v1:<config
+  sha256>`, so a request for one estimand never binds a study fitted for the other.
 - `infer(request, state)` returns outputs.effect with status, why, payload,
   uncertainty; plus the exact fitted population. No fit or model mutation.
 - `chat_request(prompt, data, config)` returns a full m5phet.task.draft2 infer
   request with stable task identity, population and identifying parameters.
 - `chat_examples()` returns `{title, prompt, data, config}` objects. Only demo
   artifacts are exposed, never the operator's real studies.
+- `chat_slots()` declares one slot, `study`, whose allowed values are the retained
+  studies: a study's own `study_id` when it has one, else its estimand and roles.
+  A study fitted with a modifier answers to phrasings that name the modifier or the
+  conditional reading ("modifier study", "estudio con modificador"), never to the
+  bare role phrases the constant-effect study on the same roles answers to.
+- `question_types()` declares `ate` and `cate`. `cate` takes the subgroup under
+  either spelling, `subgroup` or `condition`, and neither is required at the
+  envelope layer so that the named study itself states which subgroups it carries.
+- `answer_questions(state, questions, data, as_of)` answers from ONE named study.
+  The state names it by `state_ref`, by `study` (a declared slot value), or by
+  `causal_graph`; a graph or a name no retained study matches is refused with the
+  names and graphs that are retained. `cate` on a study without a modifier is
+  refused `NOT_ESTIMABLE`; a subgroup naming a variable the study did not declare
+  as a modifier is refused `NOT_ESTIMABLE` naming it and the modifiers it declares.
+  No answer carries a number the artifact does not carry, and no p-value is derived.
 
-The only accepted prompt is `Report the configured ATE and its uncertainty.`
-(case-insensitive). It is a report command, not natural-language identification.
+The only accepted prompt, when no slot value is resolved, is
+`Report the configured ATE and its uncertainty.` (case-insensitive); with a resolved
+`study` slot value the question may be any sentence, and no word of it enters the
+request. It is a report command, not natural-language identification.
 Changing causal meaning requires changing structured parameters and explicitly
 fitting another study. The provider never invents an adjustment set or assumption.
 
@@ -166,14 +194,30 @@ Failed fit/load clears old output. Local result envelopes use
 clean fit/serving environments verified, and actual main-environment
 Engine.execute returns OK without altering its installed scientific packages.
 
-Synthetic process: Z~Bernoulli(0.5), T|Z~Bernoulli(0.2+0.6Z),
-Y=2T+4Z+Normal(0,1), n=2400, seed 17. This is calibration evidence only.
+Synthetic process (ATE study): Z~Bernoulli(0.5), T|Z~Bernoulli(0.2+0.6Z),
+Y=2T+4Z+Normal(0,1), n=2400, seed 17. Synthetic process (CATE study, study_id
+`demo-modifier-v1`): baseline~Bernoulli(0.5), confounder~Normal(0,1),
+treatment~Bernoulli(sigmoid(-0.6+1.2*baseline+0.35*confounder)),
+outcome=1.0*treatment+2.0*treatment*baseline+3.0*baseline+1.5*confounder+Normal(0,1),
+n=2400, seed 4373 -- so the effect is 1 where baseline==0, 3 where baseline==1 and
+2 on average. Those equations and their implied effects are written into the
+study's own manifest when it is fitted, so the artifact carries the truth its
+estimate is checked against. Both are calibration evidence only.
 EconML LinearDML provides the estimate and HC1 normal interval directly; tests
 compare them against a separate real library invocation. No placeholder estimator,
 mocked numeric acceptance, financial conclusion, GPU, broker or real holdout.
 
-Only binary 0/1 treatment, a numeric outcome, constant effect and IID sampling
-are supported. No ATT/CATE, continuous treatment, instruments, time-series or
+Only binary 0/1 treatment, a numeric outcome and IID sampling are supported, with
+the effect either constant (estimand `ATE`) or varying with exactly ONE declared
+binary effect modifier (estimand `CATE`, effect linear in that modifier, which a
+single binary modifier satisfies exactly). A `CATE` study computes the effect at
+each declared level WHILE FITTING and carries both, with their intervals and
+subgroup counts, in its artifact; inference reads them and never refits, subsets
+or interpolates. Subgroups are read only as `<modifier> == 0` / `<modifier> == 1`:
+an inequality, another level, a cut of a continuous variable or a conjunction is a
+different estimand and needs another explicit fit. Each subgroup needs at least 20
+treated and 20 control observations, and no subgroup is pooled to reach it. No
+ATT, more than one modifier, continuous treatment, instruments, time-series or
 clustered uncertainty, causal discovery, sensitivity/refutation suite, public
 data confirmation or domain revalidation. Overlap screening is conservative
 and can reject identifiable studies. Passing it never proves identification.

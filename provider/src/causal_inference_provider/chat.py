@@ -30,44 +30,120 @@ def _clock(value):
     return parsed.astimezone(timezone.utc)
 
 
-def _study_label(config):
-    """The name a study already carries in its own identifying config, in the words a person would use to ask for it."""
+STUDY_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{2,63}")
+
+
+def task_prefix(estimand):
+    """The task family a study belongs to. Two estimands are two tasks, and a request for one never binds the other."""
+    return f"causal-{str(estimand).lower()}.v1:"
+
+
+def _study_id(body):
+    """The identifier a study was given when it was fitted, when it was given one."""
+    identifier = (body.get("manifest") or {}).get("study_id")
+    return identifier if isinstance(identifier, str) and STUDY_ID_PATTERN.fullmatch(identifier) else None
+
+
+def _role_label(config):
+    """The name a study carries in its own identifying config, in the words a person would use to ask for it."""
     return f"{config['estimand']} of {config['treatment']} on {config['outcome']}"
+
+
+def _study_label(body):
+    """The one name this study is offered under: its own identifier when it has one, else its estimand and roles."""
+    return _study_id(body) or _role_label(body["config"])
 
 
 def _study_aliases(body, label):
     """Ordinary phrasings for one retained study.
 
-    Every phrasing names both roles, the study reference, or the artifact's own development marking. A phrase naming a
-    single column is deliberately absent: it would let a question about another study ("the effect of rainfall on
-    outcome") resolve to this one because one of its words happened to match."""
+    Every phrasing names both roles, the declared modifier, the study reference, or the artifact's own development
+    marking. A phrase naming a single column is deliberately absent: it would let a question about another study ("the
+    effect of rainfall on outcome") resolve to this one because one of its words happened to match.
+
+    Two rules keep the vocabulary of several retained studies from collapsing into a coin flip. A study fitted with an
+    effect modifier is named by phrasings that MENTION that modifier or its conditional reading, never by the bare
+    role phrases that the constant-effect study on the same roles also answers to. And the generic development phrasings
+    ("demo study") stay with a study that has no identifier of its own, because that study cannot be named any other
+    short way, while one with an identifier can always be named by it."""
     config = body["config"]
     treatment, outcome = config["treatment"], config["outcome"]
-    aliases = [body["state_ref"], body["digest"], body["digest"][:12],
-               f"{treatment} on {outcome}",
-               f"effect of {treatment} on {outcome}",
-               f"average effect of {treatment} on {outcome}",
-               f"effect of {treatment} upon {outcome}"]
-    if body.get("development") is True:
-        aliases += ["demo study", "synthetic study", "development study"]
+    modifiers = list(config.get("effect_modifiers") or [])
+    aliases = [body["state_ref"], body["digest"], body["digest"][:12], _role_label(config)]
+    if modifiers:
+        named = " and ".join(modifiers)
+        aliases += [f"conditional effect of {treatment} on {outcome}",
+                    f"effect of {treatment} on {outcome} by {named}",
+                    f"effect of {treatment} on {outcome} within {named}",
+                    f"{named} subgroups",
+                    "effect modifier study", "modifier study", "study with an effect modifier",
+                    "conditional effect study", "heterogeneous effect study", "subgroup study",
+                    "estudio con modificador", "estudio con modificador de efecto",
+                    "estudio de efecto condicional", "estudio por subgrupos"]
+    else:
+        aliases += [f"{treatment} on {outcome}",
+                    f"effect of {treatment} on {outcome}",
+                    f"average effect of {treatment} on {outcome}",
+                    f"effect of {treatment} upon {outcome}"]
+        if body.get("development") is True:
+            aliases += ["demo study", "synthetic study", "development study"]
     return [phrase for phrase in dict.fromkeys(aliases) if phrase != label]
 
 
-def save_study(core, directory, *, development=False):
-    """Persist only an already fitted result. Never performs or triggers fitting."""
+def _example_title(body):
+    """What a study is about, in the title of the example that runs it, taken from the study's own declarations.
+
+    A synthetic study says what effect its generating process put there, so a person clicking the example knows what the
+    number is supposed to be. Nothing is written here that the artifact does not carry."""
+    modifiers = list(body["config"].get("effect_modifiers") or [])
+    if not modifiers:
+        return "SYNTHETIC/DEVELOPMENT: confounded ATE, known effect 2"
+    known = ((body.get("manifest") or {}).get("origin") or {}).get("known_effects") or {}
+    subgroups = ", ".join(f"{name} -> {value:g}" for name, value in sorted(known.items()) if name != "ATE")
+    title = "SYNTHETIC/DEVELOPMENT: effect modifier " + ", ".join(modifiers)
+    return f"{title}, known subgroup effects {subgroups}" if subgroups else title
+
+
+def save_study(core, directory, *, development=False, study_id=None, origin=None):
+    """Persist only an already fitted result. Never performs or triggers fitting.
+
+    A study may also be given a manifest: an identifier the person can say out loud, the provenance of its numbers, the
+    estimator and seed that produced them, the modifier it was fitted with, and -- for synthetic data -- where the data
+    came from and what effect the generating process put there. Every field of it is read from the fitted result, so the
+    manifest cannot claim an estimator, a modifier or a row count the study does not have."""
     if core.state["phase"] != "FITTED":
         raise ValueError("Only a successful explicitly fitted study can be saved.")
+    if study_id is not None and (not isinstance(study_id, str) or not STUDY_ID_PATTERN.fullmatch(study_id)):
+        raise ValueError("A study identifier must be 3-64 lowercase characters from [a-z0-9._-].")
+    if origin is not None and study_id is None:
+        raise ValueError("An origin belongs to an identified study; give the study an identifier.")
     result = core.infer()
     diagnostics = result["payload"]["diagnostics"]
+    config = core.state["config"]
     body = {
         "schema": "causal-inference.study.v1",
-        "task_id": "causal-ate.v1:" + diagnostics["config_sha256"],
+        "task_id": task_prefix(config["estimand"]) + diagnostics["config_sha256"],
         "available_at": datetime.now(timezone.utc).isoformat(),
         "development": bool(development),
-        "config": core.state["config"],
+        "config": config,
         "population": {"data_sha256": diagnostics["data_sha256"], "n_rows": diagnostics["n_rows"]},
         "result": result,
     }
+    if study_id is not None:
+        body["manifest"] = {
+            "study_id": study_id,
+            "provenance": "DEVELOPMENT" if development else "UNDECLARED",
+            "estimand": config["estimand"],
+            "estimator": diagnostics["engine"],
+            "effect_modifiers": list(config.get("effect_modifiers") or []),
+            "adjustments": list(config["adjustments"]),
+            "n": diagnostics["n_rows"],
+            # the estimator's own seed; for synthetic data the seed the DATA came from is in `origin.seed`
+            "seed": diagnostics["seed"],
+            "confidence_level": diagnostics["confidence_level"],
+            "uncertainty_method": diagnostics["uncertainty_method"],
+            "origin": deepcopy(origin),
+        }
     raw = json.dumps(body, sort_keys=True, allow_nan=False).encode()
     digest = sha256(raw).hexdigest()
     directory = Path(directory)
@@ -131,7 +207,7 @@ class M5PHETCausalProvider:
         if core.load(body.get("config"))["status"] != "OK":
             raise ValueError("Artifact lacks explicit identifying config.")
         if (body.get("result", {}).get("status") != "OK"
-                or body.get("task_id") != "causal-ate.v1:" + _digest(core.state["config"])):
+                or body.get("task_id") != task_prefix(core.state["config"]["estimand"]) + _digest(core.state["config"])):
             raise ValueError("Artifact is not a successful fitted study for this task.")
         _clock(body["available_at"])
         return body | {"state_ref": state_ref, "digest": match[1]}
@@ -193,13 +269,33 @@ class M5PHETCausalProvider:
                 loaded.append(self.load(ref))
             except (OSError, ValueError, KeyError, TypeError):
                 continue
-        labels = [_study_label(body["config"]) for body in loaded]
+        labels = [_study_label(body) for body in loaded]
         studies = {}
         for label, body in zip(labels, loaded):
             # Two studies can share estimand and roles and differ in adjustments or level; both must stay nameable.
             key = label if labels.count(label) == 1 else f"{label} ({body['digest'][:12]})"
             studies[key] = body
         return studies
+
+    def studies_named(self, name):
+        """Every retained study this name names, matched against the declared vocabulary and nothing else.
+
+        The name may be the value the slot declares (a study identifier, or the estimand and roles), any phrasing that
+        slot declares for it, or the study reference itself. A name that matches two studies returns both, so the caller
+        asks which one instead of picking one."""
+        if not isinstance(name, str) or not name.strip():
+            return []
+        wanted = name.strip().casefold()
+        found = []
+        for label, body in self._retained_studies().items():
+            spellings = [label, *_study_aliases(body, label)]
+            if any(isinstance(spelling, str) and spelling.casefold() == wanted for spelling in spellings):
+                found.append(body)
+        return found
+
+    def study_names(self):
+        """The names this provider offers right now, as a person may say them."""
+        return sorted(self._retained_studies())
 
     def chat_slots(self):
         """Declare the one thing a person chooses in ordinary words: which retained study to report.
@@ -288,8 +384,9 @@ class M5PHETCausalProvider:
     def question_types(self):
         """The question types this provider answers under the m5phet envelope, with the fields each needs.
 
-        `cate` is declared although it is always refused: a declared type reaches the provider and is refused with the
-        reason -- the retained study carries no effect modifier -- where an undeclared one would only be "unknown"."""
+        `cate` is answered by a study that was fitted with an effect modifier and carries the subgroup effect in its
+        artifact, and refused -- with the reason -- by a study that was not. It stays declared either way: a declared
+        type reaches the provider and comes back with the reason, where an undeclared one would only be "unknown"."""
         return deepcopy(_questions.QUESTION_TYPES)
 
     def answer_questions(self, state, questions, data, as_of):
@@ -312,7 +409,7 @@ class M5PHETCausalProvider:
                           if body["digest"] == state["digest"]), None)
             prompt = f"Report {label}, with its uncertainty." if label else CHAT_PROMPT
             examples.append({
-                "title": "SYNTHETIC/DEVELOPMENT: confounded ATE, known effect 2",
+                "title": _example_title(state),
                 "prompt": prompt, "data": deepcopy(state["population"]),
                 "config": {"input": "json", "provider": self.name, "family": "causal_inference",
                            "output_kind": "causal_effect", "state": ref,

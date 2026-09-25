@@ -10,6 +10,11 @@ import pytest
 
 from causal_inference_provider import CausalInferenceProvider
 
+# Fitting is an optional extra of this package (`pip install .[fit]`). A venv that serves inference does not
+# carry EconML, and a suite that FAILED there would report an environment fact as a regression; the fit venv
+# runs every test below.
+pytest.importorskip("econml")
+
 
 @pytest.fixture
 def config():
@@ -255,3 +260,119 @@ def test_randomized_no_adjustment(config):
     t = rng.binomial(1, 0.5, 2400)
     data = pd.DataFrame({"treatment": t, "outcome": 2 * t + rng.normal(size=len(t))})
     assert fitted(config, data).infer()["payload"]["estimate"] == pytest.approx(2, abs=0.2)
+
+
+# --- an effect that varies with one declared binary modifier -------------------------------------------------------------
+
+@pytest.fixture
+def modifier_config():
+    from causal_inference_provider.example import modifier_example_config
+
+    return modifier_example_config()
+
+
+@pytest.fixture
+def modifier_data():
+    from causal_inference_provider.example import modifier_example_data
+
+    return modifier_example_data()
+
+
+def test_known_heterogeneous_effects_are_recovered_with_their_own_intervals(modifier_config, modifier_data):
+    from causal_inference_provider.example import MODIFIER_KNOWN_EFFECTS
+
+    payload = fitted(modifier_config, modifier_data).infer()["payload"]
+    assert payload["estimand"] == "CATE" and payload["effect_modifiers"] == ["baseline"]
+    assert payload["estimate"] == pytest.approx(MODIFIER_KNOWN_EFFECTS["ATE"], abs=0.25)
+    carried = {cell["subgroup"]: cell for cell in payload["conditional_effects"]}
+    assert sorted(carried) == ["baseline == 0", "baseline == 1"]
+    for subgroup, cell in carried.items():
+        known = MODIFIER_KNOWN_EFFECTS[subgroup]
+        assert cell["estimate"] == pytest.approx(known, abs=0.25)
+        assert cell["interval"][0] < known < cell["interval"][1]
+        assert cell["n_treated"] >= 20 and cell["n_control"] >= 20
+        assert cell["n_treated"] + cell["n_control"] == cell["n_subgroup"]
+    assert sum(cell["n_subgroup"] for cell in carried.values()) == len(modifier_data)
+    # the subgroups differ by roughly what the generating equations put between them
+    difference = carried["baseline == 1"]["estimate"] - carried["baseline == 0"]["estimate"]
+    assert difference == pytest.approx(MODIFIER_KNOWN_EFFECTS["baseline == 1"]
+                                      - MODIFIER_KNOWN_EFFECTS["baseline == 0"], abs=0.35)
+
+
+def test_a_constant_effect_study_carries_no_subgroup_at_all(config, data):
+    payload = fitted(config, data).infer()["payload"]
+    assert "conditional_effects" not in payload and "effect_modifiers" not in payload
+
+
+@pytest.mark.parametrize("change, status", [
+    ({"effect_modifiers": []}, "INVALID_INPUT"),
+    # a modifier that is also an adjustment is the same column in two roles; more than one is a subgroup this engine
+    # cannot name, and the count is reported before the roles because it is the narrower statement
+    ({"effect_modifiers": ["confounder"]}, "INVALID_INPUT"),
+    ({"effect_modifiers": ["baseline", "extra"]}, "UNSUPPORTED_TASK"),
+    ({"effect_modifiers": ["baseline", "confounder"]}, "UNSUPPORTED_TASK"),
+    ({"effect_modifiers": "baseline"}, "INVALID_INPUT"),
+    ({"effect_modifiers": ["outcome"]}, "INVALID_INPUT"),
+    ({"estimand": "ATE"}, "INVALID_INPUT"),
+])
+def test_modifier_config_validation(modifier_config, change, status):
+    modifier_config.update(change)
+    result = CausalInferenceProvider().load(modifier_config)
+    assert result["status"] == status and result["payload"] is None
+
+
+def test_a_heterogeneous_study_may_not_declare_the_effect_constant(modifier_config):
+    modifier_config["assumptions"]["constant_effect"] = True
+    assert CausalInferenceProvider().load(modifier_config)["status"] == "INVALID_INPUT"
+    del modifier_config["assumptions"]["effect_linear_in_modifiers"]
+    assert CausalInferenceProvider().load(modifier_config)["status"] == "NOT_IDENTIFIED"
+
+
+def test_an_ate_study_may_not_carry_a_modifier(config):
+    config["effect_modifiers"] = ["baseline"]
+    assert CausalInferenceProvider().load(config)["status"] == "INVALID_INPUT"
+
+
+def test_a_modifier_that_is_not_binary_is_refused(modifier_config, modifier_data):
+    modifier_data["baseline"] = modifier_data["confounder"]
+    provider = CausalInferenceProvider()
+    assert provider.load(modifier_config)["status"] == "OK"
+    assert provider.fit(modifier_data)["status"] == "UNSUPPORTED_TASK"
+
+
+def test_a_subgroup_without_both_arms_is_refused_rather_than_pooled(modifier_config, modifier_data):
+    """A subgroup with no control units has no contrast; pooling it with the other subgroup would answer a different
+    question with this one's name."""
+    modifier_data.loc[modifier_data.baseline == 1, "treatment"] = 1
+    provider = CausalInferenceProvider()
+    assert provider.load(modifier_config)["status"] == "OK"
+    result = provider.fit(modifier_data)
+    assert result["status"] == "NOT_IDENTIFIED" and "baseline == 1" in result["reason"]
+    assert provider.infer()["payload"] is None
+
+
+def test_the_conditional_effects_match_the_real_library(modifier_config, modifier_data):
+    import numpy as np
+    from econml.dml import LinearDML
+    from econml.inference import StatsModelsInference
+    from sklearn.linear_model import LinearRegression, LogisticRegression
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    direct = LinearDML(
+        model_y=make_pipeline(StandardScaler(), LinearRegression()),
+        model_t=make_pipeline(StandardScaler(), LogisticRegression(penalty=None, max_iter=1000)),
+        discrete_treatment=True,
+        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=1729),
+        random_state=1729,
+    )
+    direct.fit(modifier_data.outcome.to_numpy(), modifier_data.treatment.to_numpy(),
+               X=modifier_data[["baseline"]].to_numpy(), W=modifier_data[["confounder"]].to_numpy(),
+               inference=StatsModelsInference(cov_type="HC1"))
+    payload = fitted(modifier_config, modifier_data).infer()["payload"]
+    for cell in payload["conditional_effects"]:
+        point = np.array([[float(cell["level"])]])
+        assert cell["estimate"] == pytest.approx(float(direct.effect(point, T0=0, T1=1)[0]), abs=1e-10)
+        low, high = direct.effect_interval(point, T0=0, T1=1, alpha=0.05)
+        assert cell["interval"] == pytest.approx([float(low[0]), float(high[0])], abs=1e-10)

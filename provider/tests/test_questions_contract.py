@@ -55,12 +55,21 @@ def fitted_artifacts():
     return []
 
 
+def constant_effect_artifacts():
+    """Only the studies fitted WITHOUT an effect modifier.
+
+    This file is about the constant-effect study and its refusals, and this machine also retains a study with a
+    modifier; picking whichever file sorted first would have swapped one study's contract for the other's."""
+    return [path for path in fitted_artifacts()
+            if not (json.loads(path.read_text(encoding="utf-8")).get("config") or {}).get("effect_modifiers")]
+
+
 @pytest.fixture
 def retained(tmp_path):
     """The real fitted demo study, copied so nothing here reads from or writes to the live state directory."""
-    sources = fitted_artifacts()
+    sources = constant_effect_artifacts()
     if not sources:
-        pytest.skip("no fitted study is retained; run `python -m causal_inference_provider prepare-demo` first")
+        pytest.skip("no constant-effect study is retained; run `python -m causal_inference_provider prepare-demo` first")
     shutil.copy(sources[0], tmp_path / sources[0].name)
     return tmp_path
 
@@ -103,7 +112,10 @@ def test_the_catalog_offers_ate_and_cate_for_the_causal_area(registry):
     assert cat["causal"]["provider"] == "causal_inference"
     assert cat["causal"]["question_types"] == QUESTION_TYPES
     assert set(cat["causal"]["question_types"]) == {"ate", "cate"}
-    assert cat["causal"]["question_types"]["cate"]["required"] == ["condition"]
+    # neither spelling of the subgroup is required at the envelope layer: a cate question with no subgroup must reach
+    # the provider, which alone knows the subgroups the named study carries and can name them in its refusal
+    assert cat["causal"]["question_types"]["cate"]["required"] == []
+    assert cat["causal"]["question_types"]["cate"]["optional"] == ["subgroup", "condition"]
 
 
 # --- ate ---------------------------------------------------------------------------------------------------------------
@@ -228,10 +240,14 @@ def test_cate_is_refused_with_the_modifier_explanation(registry, study):
     assert not any(k in answer for k in ("effect_size", "confidence_interval", "p_value"))
 
 
-def test_cate_without_its_condition_is_refused_before_the_provider(registry, study):
+def test_cate_without_a_subgroup_is_refused_by_the_study_that_would_answer_it(registry, study):
+    """The refusal moved from the envelope to the provider when a study could answer: the provider can say which
+    subgroups the named study carries, and a study that carries none says that instead."""
     answer = questions.run_task(task({"causal_graph": graph_of(study)}, jovenes={"type": "cate"}),
                                 registry)["answers"]["jovenes"]
-    assert answer["refusal"] == questions.MISSING_FIELD and "condition" in answer["why"]
+    assert answer["status"] == "REFUSED" and answer["refusal"] == questions.NOT_ESTIMABLE
+    assert "effect modifier" in answer["why"] and "None" in answer["why"]
+    assert "effect_size" not in answer
 
 
 def test_ate_and_cate_asked_together_come_back_together(registry, study):
