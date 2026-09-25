@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 
+from . import questions as _questions
 from .provider import CausalInferenceProvider, _digest
 
 
@@ -80,6 +81,7 @@ class M5PHETCausalProvider:
     """Reports a fitted study, never estimates from text or during inference."""
 
     name = "causal_inference"
+    area = "causal"
 
     def __init__(self, directory=None, *, state_refs=None):
         self.directory = Path(directory) if directory is not None else state_directory()
@@ -282,6 +284,17 @@ class M5PHETCausalProvider:
         }
         request["request_id"] = "causal-report:" + _digest(request)
         return request
+
+    def question_types(self):
+        """The question types this provider answers under the m5phet envelope, with the fields each needs.
+
+        `cate` is declared although it is always refused: a declared type reaches the provider and is refused with the
+        reason -- the retained study carries no effect modifier -- where an undeclared one would only be "unknown"."""
+        return deepcopy(_questions.QUESTION_TYPES)
+
+    def answer_questions(self, state, questions, data, as_of):
+        """Answer named, typed questions from the one retained study the state names; see `questions.py`."""
+        return _questions.answer_questions(self, state, questions, data, as_of)
 
     def chat_examples(self):
         """List only explicitly prepared synthetic development studies."""
