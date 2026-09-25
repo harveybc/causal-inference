@@ -11,11 +11,21 @@ computed when the study was fitted, for a level of a declared modifier. A subgro
 name: not left undeclared, which would say only "unknown type"; not answered from the average, which would put a number
 where the study has none; and not obtained by subsetting the population and refitting, which no question does here.
 Nothing in this file fits, subsets, or derives a statistic the artifact does not carry.
+
+Since WP22 a second kind of study is retained beside those: an **event study** -- local projections of a price series
+on the standardized surprises of dated calendar releases, registered from a `m5phet.event_projections.v1` document.
+It answers `impulse_response`, `sensitivity` and `counterfactual_path`, and it answers no `ate` and no `cate`,
+because it has no treatment arms, no population of units and no contrast. A treatment-effect study answers the
+mirror image: no horizon, no release, no surprise, so none of the three. Both directions are refused `NOT_ESTIMABLE`
+by name, with the kind of study that would answer stated, and neither study ever stands in for the other. The
+answers themselves are built in `event_study.py`; this file routes to them and owns the refusals.
 """
 
 from copy import deepcopy
 from datetime import datetime, timezone
 import re
+
+from . import event_study as _event
 
 # Refusal codes shared with m5phet.questions. They are repeated here by value so serving keeps no dependency on the
 # workbench package; a caller matches on the strings, and the strings are fixed there.
@@ -25,7 +35,8 @@ MALFORMED_QUESTION = "MALFORMED_QUESTION"
 
 GRAPH_FIELDS = ("treatment", "outcome", "confounders")
 
-QUESTION_TYPES = {
+#: The two types a treatment-effect study answers. An event study answers neither, and says so by name.
+EFFECT_QUESTION_TYPES = {
     # An average effect carries no field of its own: the study named by the state is the whole question.
     "ate": {"required": [], "optional": []},
     # A conditional effect names the subgroup it is about. Both spellings are accepted and mean the same thing:
@@ -34,6 +45,13 @@ QUESTION_TYPES = {
     # named study actually carries -- which is more than "a field is missing" can say.
     "cate": {"required": [], "optional": ["subgroup", "condition"]},
 }
+
+#: Every type this provider declares: the two above, plus the three an EVENT study answers (WP22). All five stay
+#: declared whatever is retained, because a declared type reaches the provider and comes back with the reason the
+#: study it was asked of cannot answer it, where an undeclared one would come back only as "unknown type".
+QUESTION_TYPES = {**EFFECT_QUESTION_TYPES, **_event.QUESTION_TYPES}
+
+EVENT_QUESTION_TYPES = tuple(_event.QUESTION_TYPES)
 
 SUBGROUP_FIELDS = ("subgroup", "condition")
 #: The only subgroup form a study can answer: a declared effect modifier at one of its two declared levels. Anything
@@ -249,7 +267,9 @@ def resolve_study(provider, state, data, as_of):
     studies = list(provider._retained_studies().values())
     if not studies:
         return None, (STATE_REQUIRED, "no fitted study is retained by this provider; explicitly fit one "
-                                      "(`python -m causal_inference_provider fit` or `prepare-demo`) before asking")
+                                      "(`python -m causal_inference_provider fit` or `prepare-demo`) before asking. "
+                                      "The event studies it retains, which answer other question types, are "
+                                      + str(sorted(event_studies_of(provider))))
     if data is not None and not (isinstance(data, (str, list, tuple, dict)) and not data):
         return None, (NOT_ESTIMABLE, "a dataset was attached, but this provider does not fit during inference; "
                                      "questions are answered from studies fitted explicitly beforehand")
@@ -267,8 +287,9 @@ def resolve_study(provider, state, data, as_of):
         candidates = provider.studies_named(named)
         if not candidates:
             return None, (STATE_REQUIRED, f"no retained study is named {named!r}; this provider holds "
-                                          f"{provider.study_names()}, and the study that is here is not an answer to a "
-                                          f"question about another one")
+                                          f"{provider.study_names()} and the event studies "
+                                          f"{sorted(event_studies_of(provider))}, and the study that is here is not "
+                                          f"an answer to a question about another one")
     elif graph is not None:
         candidates = [body for body in studies if not graph_differences(graph, body["config"])]
         if not candidates:
@@ -312,10 +333,89 @@ def resolve_study(provider, state, data, as_of):
     return body, None
 
 
+def event_studies_of(provider):
+    """Every event study the provider retains, or an empty mapping when it declares none (an older adapter)."""
+    method = getattr(provider, "event_studies", None)
+    return method() if callable(method) else {}
+
+
+def resolve_event_study(provider, state):
+    """The event study the state names, when it names one.
+
+    Returns `(manifest, None)` when it does, `(None, trouble)` when it names one nobody retains, and `(None, None)`
+    when it names no event study at all -- which is how a state about a treatment-effect study passes through here
+    untouched. An event study is named the same three ways a treatment-effect study is, minus the causal graph: a
+    graph has a treatment and an outcome, and an event study has releases and horizons instead."""
+    studies = event_studies_of(provider)
+    ref = state.get("state_ref")
+    if isinstance(ref, str) and ref.startswith(_event.REF_PREFIX):
+        for manifest in studies.values():
+            if manifest["state_ref"] == ref:
+                return manifest, None
+        return None, (STATE_REQUIRED, f"state_ref {ref!r} is not an event study this provider retains; it holds "
+                                      f"{[manifest['state_ref'] for manifest in studies.values()]}")
+    named = state.get("study")
+    if isinstance(named, str) and named.strip():
+        wanted = named.strip().casefold()
+        found = [manifest for label, manifest in studies.items()
+                 if wanted in {label.casefold(), str(manifest.get("study_id") or "").casefold(),
+                               manifest["state_ref"].casefold(), manifest["digest"].casefold()}]
+        if len(found) > 1:
+            return None, (STATE_REQUIRED, "more than one retained event study answers to that name; name one by "
+                                          "`state_ref`: " + str([manifest["state_ref"] for manifest in found]))
+        if found:
+            return found[0], None
+    return None, None
+
+
+def event_study_refusal(manifest, kind):
+    """Why an event study answers no `ate` and no `cate`. It is about the study, not about the person asking."""
+    return refusal(NOT_ESTIMABLE,
+                   f"study {manifest.get('study_id') or manifest['state_ref']!r} is an EVENT STUDY: local "
+                   f"projections of a price series on the standardized surprises of dated calendar releases. It has "
+                   f"no treatment arms, no population of units and no contrast, so it carries no {kind} and one is "
+                   f"not derived from it during inference; it answers {sorted(_event.QUESTION_TYPES)}. An {kind} "
+                   f"needs a study fitted explicitly with a binary treatment, and that is a different study",
+                   kind)
+
+
+def effect_study_refusal(body, kind):
+    """Why a treatment-effect study answers none of the three event-study types."""
+    config = body["config"]
+    return refusal(NOT_ESTIMABLE,
+                   f"study {body['state_ref']} estimates {config['estimand']} of {config['treatment']} on "
+                   f"{config['outcome']} over a population of units; it has no calendar release, no horizon and no "
+                   f"surprise, so {kind!r} cannot be read from it and it is not estimated during inference. That "
+                   f"question needs a study of kind {_event.KIND!r}, registered with "
+                   f"`python -m causal_inference_provider register-event-study --projections ... --rows ... --id ...` "
+                   f"from a {_event.PROJECTIONS_SCHEMA} document",
+                   kind)
+
+
 def answer_questions(provider, state, questions, data, as_of):
-    """Answer each declared question from the one study the state names, or refuse each by name."""
+    """Answer each declared question from the one study the state names, or refuse each by name.
+
+    Two kinds of study are retained here and a state names exactly one of them. An event study is looked for first,
+    because it is named by an identifier the treatment-effect resolver would not recognise; when the state names one,
+    every question is answered from it and `ate`/`cate` are refused by name. Otherwise the treatment-effect resolver
+    runs unchanged, and the three event-study types are refused by name there."""
     if not isinstance(state, dict):
         state = {}
+    manifest, trouble = resolve_event_study(provider, state)
+    if trouble is not None:
+        kind, why = trouble
+        return {name: refusal(kind, why, question["type"]) for name, question in questions.items()}
+    if manifest is not None:
+        if data is not None and not (isinstance(data, (str, list, tuple, dict)) and not data):
+            why = ("a dataset was attached, but this provider does not fit during inference; an event study answers "
+                   "from the projections document it was registered from")
+            return {name: refusal(NOT_ESTIMABLE, why, question["type"]) for name, question in questions.items()}
+        out = {"__state_ref__": manifest["state_ref"]}
+        for name, question in questions.items():
+            kind = question["type"]
+            out[name] = (event_study_refusal(manifest, kind) if kind in EFFECT_QUESTION_TYPES
+                         else _event.answer(manifest, kind, question))
+        return out
     body, trouble = resolve_study(provider, state, data, as_of)
     if body is None:
         kind, why = trouble
@@ -327,6 +427,8 @@ def answer_questions(provider, state, questions, data, as_of):
             out[name] = ate_answer(body)
         elif kind == "cate":
             out[name] = cate_answer(body, subgroup_asked(question))
+        elif kind in EVENT_QUESTION_TYPES:
+            out[name] = effect_study_refusal(body, kind)
         else:
             out[name] = refusal(NOT_ESTIMABLE, f"this provider declares {sorted(QUESTION_TYPES)} and cannot answer "
                                                f"{kind!r}", kind)

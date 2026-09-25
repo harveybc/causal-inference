@@ -10,6 +10,7 @@ import pandas as pd
 
 from .provider import CausalInferenceProvider, MAX_ROWS, _response
 from .chat import save_study, state_directory
+from . import event_study as _event
 from . import study_space as _space
 from . import study_spec as _spec
 
@@ -86,6 +87,33 @@ def prepare_study(args):
     return 0 if result["status"] == "OK" else 2
 
 
+def register_event_study(args):
+    """Register a fitted event study: the projections document, the rows it was fitted from, and an identifier.
+
+    Nothing is fitted or read into memory here beyond the projections document itself. The manifest records the
+    sha256 of BOTH files, so a document that changes underneath a registered study is refused by name at question
+    time rather than answered from."""
+    try:
+        state_ref = _event.register(args.projections, args.rows, args.id, args.state_dir)
+    except (OSError, ValueError) as trouble:
+        print(json.dumps({"state_ref": None, "study_id": args.id,
+                          "result": _response("INVALID_INPUT", str(trouble))}, indent=2, allow_nan=False))
+        return 2
+    manifest = _event.load(_event.directory_for(args.state_dir) / (state_ref[len(_event.REF_PREFIX):] + ".json"),
+                           reference=state_ref)
+    print(json.dumps({
+        "state_ref": state_ref, "study_id": manifest["study_id"], "kind": manifest["kind"],
+        "projections_sha256": manifest["documents"]["projections"]["sha256"],
+        "rows_sha256": manifest["documents"]["rows"]["sha256"],
+        "event_types": manifest["event_types"], "horizons_minutes": manifest["horizons_minutes"],
+        "outcomes": manifest["outcomes"], "identification": manifest["identification"]["verdict"],
+        "identification_caveat": manifest["identification_caveat"],
+        "superposition": manifest["superposition"]["verdict"],
+        "result": _response("OK", "Registered only; nothing was fitted and no number was copied."),
+    }, indent=2, allow_nan=False))
+    return 0
+
+
 def choose_study_command(args, decider=None):
     """Profile a CSV, ask Laya for every declared choice, and write the spec those decisions describe.
 
@@ -138,6 +166,17 @@ def main():
                       help="Fit the SYNTHETIC/DEVELOPMENT study that declares an effect modifier (estimand CATE), so "
                            "conditional-effect questions about its declared subgroups can be answered. It is a second, "
                            "separate study: nothing already retained is read, changed or replaced.")
+    event = commands.add_parser("register-event-study",
+                                help="Register an already fitted EVENT study -- local projections of a price series "
+                                     "on calendar surprises -- so the envelope can ask impulse_response, "
+                                     "sensitivity and counterfactual_path of it. Nothing is fitted here.")
+    event.add_argument("--projections", type=Path, required=True,
+                       help="The m5phet.event_projections.v1 document written by feature_eng_m5phet.local_projections.")
+    event.add_argument("--rows", type=Path, required=True,
+                       help="The m5phet.event_rows.v1 document those projections were fitted from; a counterfactual "
+                            "path is evaluated over it.")
+    event.add_argument("--id", required=True, help="The identifier the study is retained and asked for under.")
+    event.add_argument("--state-dir", type=Path, default=state_directory())
     choose = commands.add_parser("choose-study", help="Ask Laya to choose a study's configuration from a dataset "
                                                       "profile and a problem sentence, and write the spec.")
     choose.add_argument("--dataset", type=Path, required=True, help="The CSV the study would be fitted on. Only its "
@@ -159,6 +198,8 @@ def main():
     extra = {}
     saved = {"development": args.command == "prepare-demo"}
     try:
+        if args.command == "register-event-study":
+            return register_event_study(args)
         if args.command == "choose-study":
             return choose_study_command(args)
         if args.command == "prepare-study":

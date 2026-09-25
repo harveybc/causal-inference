@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 
+from . import event_study as _event
 from . import questions as _questions
 from . import study_space as _space
 from .provider import CausalInferenceProvider, _digest
@@ -17,6 +18,11 @@ CHAT_PROMPT = "Report the configured ATE and its uncertainty."
 UNCERTAINTY = "econml_statsmodels_HC1_normal"
 REF_PATTERN = re.compile(r"causal-ate:([a-f0-9]{64})")
 STUDY_SLOT = "study"
+#: The slot WP22 adds: which calendar event a question about a registered event study is about. Its admissible values
+#: are the event types those studies carry, enumerated from their own manifests, so a person names a release the
+#: projections were actually fitted on or is refused. It selects no study -- an event study is asked through the
+#: question envelope, not through the report command -- and it is absent when nothing registers an event type.
+EVENT_SLOT = "event"
 
 
 def state_directory():
@@ -89,6 +95,19 @@ def _study_aliases(body, label):
         if body.get("development") is True:
             aliases += ["demo study", "synthetic study", "development study"]
     return [phrase for phrase in dict.fromkeys(aliases) if phrase != label]
+
+
+def _event_aliases(name):
+    """Ordinary phrasings for one calendar event type, built from the name the study itself carries.
+
+    A calendar event type is written `Country | Indicator` in the archive these studies are fitted from, and nobody
+    says it that way out loud. The indicator alone and the two parts joined by a space are therefore offered as
+    phrasings -- and nothing else is invented: an acronym this provider made up would be a name no study carries."""
+    parts = [part.strip() for part in str(name).split("|") if part.strip()]
+    aliases = []
+    if len(parts) == 2:
+        aliases += [parts[1], " ".join(parts), f"{parts[1]} ({parts[0]})"]
+    return [phrase for phrase in dict.fromkeys(aliases) if phrase and phrase != name]
 
 
 def _example_title(body):
@@ -292,6 +311,25 @@ class M5PHETCausalProvider:
             studies[key] = body
         return studies
 
+    def event_studies(self):
+        """Every EVENT study this provider retains, keyed by the identifier it was registered under (WP22).
+
+        They live in their own subdirectory of the state directory and carry their own reference prefix, so nothing
+        here can confuse one with a treatment-effect study: the two kinds answer disjoint question types and each
+        refuses the other's by name."""
+        return _event.retained(self.directory)
+
+    def event_study_names(self):
+        """The names the retained event studies are offered under."""
+        return sorted(self.event_studies())
+
+    def event_types(self):
+        """Every calendar event type the retained event studies carry, which is what the `event` slot admits."""
+        found = set()
+        for manifest in self.event_studies().values():
+            found.update(name for name in manifest.get("event_types") or [] if isinstance(name, str))
+        return sorted(found)
+
     def studies_named(self, name):
         """Every retained study this name names, matched against the declared vocabulary and nothing else.
 
@@ -322,10 +360,18 @@ class M5PHETCausalProvider:
         never fits, so declaring them would either pose a question with a single answer or open a slot whose admissible
         values cannot be listed. With nothing retained there is no vocabulary and no slot at all."""
         studies = self._retained_studies()
-        if not studies:
-            return []
-        return [{"name": STUDY_SLOT, "type": "string", "allowed": sorted(studies),
-                 "aliases": {label: _study_aliases(body, label) for label, body in studies.items()}}]
+        slots = []
+        if studies:
+            slots.append({"name": STUDY_SLOT, "type": "string", "allowed": sorted(studies),
+                          "aliases": {label: _study_aliases(body, label) for label, body in studies.items()}})
+        events = self.event_types()
+        if events:
+            # WP22: the calendar events the registered event studies were fitted on. Enumerated from their manifests,
+            # never invented, and absent when no event study is registered -- a slot whose admissible values cannot be
+            # listed is not a slot.
+            slots.append({"name": EVENT_SLOT, "type": "string", "allowed": events,
+                          "aliases": {name: _event_aliases(name) for name in events}})
+        return slots
 
     def _selected_study(self, parameters, config):
         """Resolve declared slot values to exactly one retained study, refusing any other value by name.
@@ -337,7 +383,9 @@ class M5PHETCausalProvider:
         studies = self._retained_studies()
         if not studies:
             raise ValueError("No fitted study is retained; explicitly fit one with the CLI before asking for a report.")
-        undeclared = sorted(str(name) for name in set(parameters) - {STUDY_SLOT})
+        # EVENT_SLOT names a calendar release for the envelope's event-study questions and selects no study, so it
+        # is accepted here and ignored: a resolved value that does not choose a report is not an undeclared parameter.
+        undeclared = sorted(str(name) for name in set(parameters) - {STUDY_SLOT, EVENT_SLOT})
         if undeclared:
             raise ValueError("Undeclared chat parameters: " + ", ".join(undeclared))
         label = parameters.get(STUDY_SLOT)

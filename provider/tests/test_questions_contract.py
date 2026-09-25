@@ -111,7 +111,12 @@ def test_the_catalog_offers_ate_and_cate_for_the_causal_area(registry):
     cat = questions.catalog(registry)
     assert cat["causal"]["provider"] == "causal_inference"
     assert cat["causal"]["question_types"] == QUESTION_TYPES
-    assert set(cat["causal"]["question_types"]) == {"ate", "cate"}
+    # WP22 added the three types an EVENT study answers. They stay declared whatever is retained, so a caller who
+    # asks one of a treatment-effect study is told which kind of study answers it instead of "unknown type"; the two
+    # treatment-effect types below are unchanged by their arrival.
+    assert set(cat["causal"]["question_types"]) == {"ate", "cate", "impulse_response", "sensitivity",
+                                                   "counterfactual_path"}
+    assert cat["causal"]["question_types"]["ate"] == {"required": [], "optional": []}
     # neither spelling of the subgroup is required at the envelope layer: a cate question with no subgroup must reach
     # the provider, which alone knows the subgroups the named study carries and can name them in its refusal
     assert cat["causal"]["question_types"]["cate"]["required"] == []
