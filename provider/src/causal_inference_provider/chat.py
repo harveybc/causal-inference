@@ -369,7 +369,10 @@ class M5PHETCausalProvider:
             # WP22: the calendar events the registered event studies were fitted on. Enumerated from their manifests,
             # never invented, and absent when no event study is registered -- a slot whose admissible values cannot be
             # listed is not a slot.
-            slots.append({"name": EVENT_SLOT, "type": "string", "allowed": events,
+            # `required: False` because an event is what the EVENT-STUDY questions take; a sentence asking for an
+            # average effect names a study and no event, and demanding one broke every ATE sentence the moment the
+            # first event study was registered (measured on the owner's instance, 2026-09-25).
+            slots.append({"name": EVENT_SLOT, "type": "string", "allowed": events, "required": False,
                           "aliases": {name: _event_aliases(name) for name in events}})
         return slots
 

@@ -378,3 +378,12 @@ def test_the_counterfactual_path_is_computed_by_the_engine_that_owns_it_and_is_l
         assert row["observed_outcome"] is not None
     planted = [row for row in answered if row["event"] == "A" and row["horizon_minutes"] == 30 and row["zeroed"]]
     assert planted, "no zeroed release of the planted type reached an answer"
+
+
+def test_registering_an_event_study_does_not_make_an_average_effect_sentence_need_an_event(provider):
+    """The regression this file exists to prevent: the moment the first event study was registered on the owner's
+    instance, every ATE sentence was refused with 'the question does not name a supported event'."""
+    from causal_inference_provider.chat import EVENT_SLOT
+    slots = {slot["name"]: slot for slot in provider.chat_slots()}
+    assert EVENT_SLOT in slots and slots[EVENT_SLOT].get("required") is False
+    assert slots[EVENT_SLOT]["allowed"], "the slot lists the registered study's own events"
