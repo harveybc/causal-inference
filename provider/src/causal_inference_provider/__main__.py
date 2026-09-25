@@ -86,6 +86,38 @@ def prepare_study(args):
     return 0 if result["status"] == "OK" else 2
 
 
+def choose_study_command(args, decider=None):
+    """Profile a CSV, ask Laya for every declared choice, and write the spec those decisions describe.
+
+    Nothing is fitted here and nothing is fitted afterwards without being asked: the spec this writes is handed to
+    `prepare-study` explicitly, by a person who has read it. The whole choice document -- profile, every decision with
+    its option set and its own uncalibrated probabilities, and the spec or the refusal -- goes to stdout, so a run is
+    auditable from its own output; `--out` receives the spec alone, and receives nothing at all when the composition
+    was refused, because there is no spec to write.
+
+    `decider` is the thing Laya is asked through; with none the command builds the workbench's own `Engine`, which
+    takes the private worker route. A test passes a registry instead, and no test ever reaches the worker."""
+    from . import choose_study as chooser
+    if decider is None:
+        try:
+            from m5phet.web.engine import Engine
+        except ImportError as missing:
+            print(json.dumps({"status": "REFUSED", "refusal": "PROVIDER_ERROR",
+                              "why": f"choosing a study asks Laya through m5phet, which this interpreter does not "
+                                     f"hold: {missing}"}, indent=2))
+            return 2
+        decider = Engine()
+    document = chooser.choose_study(decider, args.dataset, args.problem, as_of=args.as_of,
+                                    record_dir=args.record_dir, study_id=args.study_id,
+                                    provenance=args.provenance, outcome_unit=args.outcome_unit)
+    if document["status"] == "OK" and args.out is not None:
+        args.out.write_text(json.dumps(document["spec"], indent=2, sort_keys=True, allow_nan=False) + "\n",
+                            encoding="utf-8")
+        document = document | {"spec_path": str(args.out), "spec_sha256": _spec.spec_digest(document["spec"])}
+    print(json.dumps(document, indent=2, allow_nan=False))
+    return 0 if document["status"] == "OK" else 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -106,11 +138,29 @@ def main():
                       help="Fit the SYNTHETIC/DEVELOPMENT study that declares an effect modifier (estimand CATE), so "
                            "conditional-effect questions about its declared subgroups can be answered. It is a second, "
                            "separate study: nothing already retained is read, changed or replaced.")
+    choose = commands.add_parser("choose-study", help="Ask Laya to choose a study's configuration from a dataset "
+                                                      "profile and a problem sentence, and write the spec.")
+    choose.add_argument("--dataset", type=Path, required=True, help="The CSV the study would be fitted on. Only its "
+                                                                    "profile is shown to the model; no row is.")
+    choose.add_argument("--problem", required=True, help="One sentence saying what the study is about.")
+    choose.add_argument("--out", type=Path, default=None, help="Where to write the composed spec. Nothing is written "
+                                                               "when the composition is refused.")
+    choose.add_argument("--record-dir", type=Path, default=state_directory() / "decisions",
+                        help="Where the decision records are filed, content-addressed. Their digests go into the "
+                             "spec, so a study can always be traced back to the choices that made it; by default "
+                             "they are filed beside the studies this repository retains.")
+    choose.add_argument("--study-id", default=None, help="The identifier the fitted study would be retained under.")
+    choose.add_argument("--provenance", default="UNDECLARED", choices=list(_spec.PROVENANCE),
+                        help="The provenance of the data. A chooser cannot establish it, so it is declared here.")
+    choose.add_argument("--outcome-unit", default=None, help="The unit the outcome is measured in.")
+    choose.add_argument("--as-of", default=None, help="The clock the decisions are stamped at; now by default.")
     args = parser.parse_args()
     state_ref = None
     extra = {}
     saved = {"development": args.command == "prepare-demo"}
     try:
+        if args.command == "choose-study":
+            return choose_study_command(args)
         if args.command == "prepare-study":
             return prepare_study(args)
         if args.command == "prepare-demo":

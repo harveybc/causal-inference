@@ -1,0 +1,362 @@
+{
+  "schema": "m5phet.causal_study_choice.v1",
+  "kind": "causal_study",
+  "problem": "Estimate the effect of treatment on outcome; baseline may modify the effect; confounder is a common cause",
+  "profile": {
+    "path": "/tmp/claude-1000/-home-harveybc-Documents-GitHub-predictor/94c1b43d-d764-48d5-885f-68470ae06b5f/scratchpad/wp20/synthetic_modifier.csv",
+    "rows": 2400,
+    "columns": [
+      "baseline",
+      "confounder",
+      "treatment",
+      "outcome"
+    ],
+    "summary_decimals": 6,
+    "columns_detail": {
+      "baseline": {
+        "dtype": "int64",
+        "numeric": true,
+        "missing_fraction": 0.0,
+        "distinct_values": 2,
+        "binary": true,
+        "mean": 0.505417,
+        "std": 0.500075,
+        "min": 0.0,
+        "max": 1.0,
+        "coded_0_1": true
+      },
+      "confounder": {
+        "dtype": "float64",
+        "numeric": true,
+        "missing_fraction": 0.0,
+        "distinct_values": 2400,
+        "binary": false,
+        "mean": 0.006057,
+        "std": 1.046969,
+        "min": -3.988474,
+        "max": 3.393396,
+        "coded_0_1": false
+      },
+      "treatment": {
+        "dtype": "int64",
+        "numeric": true,
+        "missing_fraction": 0.0,
+        "distinct_values": 2,
+        "binary": true,
+        "mean": 0.490417,
+        "std": 0.500012,
+        "min": 0.0,
+        "max": 1.0,
+        "coded_0_1": true
+      },
+      "outcome": {
+        "dtype": "float64",
+        "numeric": true,
+        "missing_fraction": 0.0,
+        "distinct_values": 2400,
+        "binary": false,
+        "mean": 2.638351,
+        "std": 3.228397,
+        "min": -5.292165,
+        "max": 12.196217,
+        "coded_0_1": false
+      }
+    }
+  },
+  "decisions": [
+    {
+      "question": "baseline",
+      "kind": "causal_study",
+      "chosen": "confounder",
+      "options": [
+        [
+          "treatment",
+          "The intervention whose effect is asked about (binary, coded 0/1)"
+        ],
+        [
+          "outcome",
+          "The variable the effect is measured on"
+        ],
+        [
+          "confounder",
+          "Adjusted for: it moves both the treatment and the outcome"
+        ],
+        [
+          "modifier",
+          "The effect varies with it; the study reports an effect per level (binary, coded 0/1)"
+        ],
+        [
+          "exclude",
+          "Not used by the study at all"
+        ]
+      ],
+      "probabilities": {
+        "treatment": 0.1036,
+        "outcome": 0.1079,
+        "confounder": 0.4085,
+        "modifier": 0.2196,
+        "exclude": 0.1605
+      },
+      "probability_decimals": 4,
+      "state_sha256": "f7a6d52b18a6383db06e7ffddce1bce20ad74f0b330bd12642dc5ccf20e579b8",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:41:05.134456+00:00",
+      "digest": "ab6fe2b1f8a3909f7fb57d02b2b844c10d052e8bdbaf73a5821df6e07a4d025e",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/ab6fe2b1f8a3909f7fb57d02b2b844c10d052e8bdbaf73a5821df6e07a4d025e.json"
+    },
+    {
+      "question": "confounder",
+      "kind": "causal_study",
+      "chosen": "confounder",
+      "options": [
+        [
+          "treatment",
+          "The intervention whose effect is asked about (binary, coded 0/1)"
+        ],
+        [
+          "outcome",
+          "The variable the effect is measured on"
+        ],
+        [
+          "confounder",
+          "Adjusted for: it moves both the treatment and the outcome"
+        ],
+        [
+          "modifier",
+          "The effect varies with it; the study reports an effect per level (binary, coded 0/1)"
+        ],
+        [
+          "exclude",
+          "Not used by the study at all"
+        ]
+      ],
+      "probabilities": {
+        "treatment": 0.0907,
+        "outcome": 0.0993,
+        "confounder": 0.3591,
+        "modifier": 0.1179,
+        "exclude": 0.333
+      },
+      "probability_decimals": 4,
+      "state_sha256": "232864f300fa2dd80ab30a59af6fe844d72b1ec51dbbf12f881b7eddfe88a83b",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:41:20.936522+00:00",
+      "digest": "853a2ff9830fcfe0781572bb9b0955206d00d0c84677f4d71c788b662097f6d4",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/853a2ff9830fcfe0781572bb9b0955206d00d0c84677f4d71c788b662097f6d4.json"
+    },
+    {
+      "question": "treatment",
+      "kind": "causal_study",
+      "chosen": "confounder",
+      "options": [
+        [
+          "treatment",
+          "The intervention whose effect is asked about (binary, coded 0/1)"
+        ],
+        [
+          "outcome",
+          "The variable the effect is measured on"
+        ],
+        [
+          "confounder",
+          "Adjusted for: it moves both the treatment and the outcome"
+        ],
+        [
+          "modifier",
+          "The effect varies with it; the study reports an effect per level (binary, coded 0/1)"
+        ],
+        [
+          "exclude",
+          "Not used by the study at all"
+        ]
+      ],
+      "probabilities": {
+        "treatment": 0.209,
+        "outcome": 0.0917,
+        "confounder": 0.3549,
+        "modifier": 0.1286,
+        "exclude": 0.2159
+      },
+      "probability_decimals": 4,
+      "state_sha256": "884300d3731b0e56fa9d72e9c149f9357a6aa7dc310f4102b75296d9408ea7e8",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:41:41.218789+00:00",
+      "digest": "7e9a0aa4e1765c325c12d52f75d7b9f1e62a7d0f418db0444c065dbcde60c7e7",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/7e9a0aa4e1765c325c12d52f75d7b9f1e62a7d0f418db0444c065dbcde60c7e7.json"
+    },
+    {
+      "question": "outcome",
+      "kind": "causal_study",
+      "chosen": "confounder",
+      "options": [
+        [
+          "treatment",
+          "The intervention whose effect is asked about (binary, coded 0/1)"
+        ],
+        [
+          "outcome",
+          "The variable the effect is measured on"
+        ],
+        [
+          "confounder",
+          "Adjusted for: it moves both the treatment and the outcome"
+        ],
+        [
+          "modifier",
+          "The effect varies with it; the study reports an effect per level (binary, coded 0/1)"
+        ],
+        [
+          "exclude",
+          "Not used by the study at all"
+        ]
+      ],
+      "probabilities": {
+        "treatment": 0.1273,
+        "outcome": 0.1607,
+        "confounder": 0.2999,
+        "modifier": 0.1239,
+        "exclude": 0.2882
+      },
+      "probability_decimals": 4,
+      "state_sha256": "11c761d601053eff223f29d922ea361d63b427acfb08b8a2d5575aabb46df671",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:42:05.603632+00:00",
+      "digest": "0f751c1c6b886b51adb7bb1216b617b0c5d8249b99ed8b318aba3a195fcd3ba3",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/0f751c1c6b886b51adb7bb1216b617b0c5d8249b99ed8b318aba3a195fcd3ba3.json"
+    },
+    {
+      "question": "estimator",
+      "kind": "causal_study",
+      "chosen": "LinearDML",
+      "options": [
+        [
+          "LinearDML",
+          "Double machine learning with a linear final model and HC1 robust intervals"
+        ],
+        [
+          "DRLearner",
+          "Doubly robust learner (propensity and outcome regression) with bootstrap intervals"
+        ],
+        [
+          "SparseLinearDML",
+          "Double machine learning with a debiased-lasso final model and its normal intervals"
+        ],
+        [
+          "DML",
+          "Double machine learning with an explicit linear final model and bootstrap intervals"
+        ]
+      ],
+      "probabilities": {
+        "LinearDML": 0.3126,
+        "DRLearner": 0.2236,
+        "SparseLinearDML": 0.2361,
+        "DML": 0.2278
+      },
+      "probability_decimals": 4,
+      "state_sha256": "2d055c29eab6b128a702d25299c00fc13790b50d3e553244846817e9770d9404",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:42:22.117803+00:00",
+      "digest": "2417d26ac5668e73f630091f15af41fecf81e6851cb2e356413d8731df04c2d7",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/2417d26ac5668e73f630091f15af41fecf81e6851cb2e356413d8731df04c2d7.json"
+    },
+    {
+      "question": "model_y",
+      "kind": "causal_study",
+      "chosen": "ridge",
+      "options": [
+        [
+          "lasso",
+          "L1-penalised linear models (Lasso / L1 logistic regression)"
+        ],
+        [
+          "ridge",
+          "L2-penalised linear models (Ridge / L2 logistic regression)"
+        ],
+        [
+          "gradient_boosting",
+          "Gradient-boosted regression trees"
+        ],
+        [
+          "random_forest",
+          "Random forest, leaves held large enough to keep the fit stable"
+        ]
+      ],
+      "probabilities": {
+        "lasso": 0.3416,
+        "ridge": 0.3623,
+        "gradient_boosting": 0.1256,
+        "random_forest": 0.1705
+      },
+      "probability_decimals": 4,
+      "state_sha256": "10b7711bf95a5e13f0d20a4849372af76be9e019677adcabd3b55d89484bba2b",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:42:31.501853+00:00",
+      "digest": "4368685dba340faa657f702427939c6b7a2fa6d995d9f17c515d2da72404e1c6",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/4368685dba340faa657f702427939c6b7a2fa6d995d9f17c515d2da72404e1c6.json"
+    },
+    {
+      "question": "model_t",
+      "kind": "causal_study",
+      "chosen": "ridge",
+      "options": [
+        [
+          "lasso",
+          "L1-penalised linear models (Lasso / L1 logistic regression)"
+        ],
+        [
+          "ridge",
+          "L2-penalised linear models (Ridge / L2 logistic regression)"
+        ],
+        [
+          "gradient_boosting",
+          "Gradient-boosted regression trees"
+        ],
+        [
+          "random_forest",
+          "Random forest, leaves held large enough to keep the fit stable"
+        ]
+      ],
+      "probabilities": {
+        "lasso": 0.3278,
+        "ridge": 0.3614,
+        "gradient_boosting": 0.1268,
+        "random_forest": 0.1841
+      },
+      "probability_decimals": 4,
+      "state_sha256": "10b7711bf95a5e13f0d20a4849372af76be9e019677adcabd3b55d89484bba2b",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:42:31.501853+00:00",
+      "digest": "d7aa62161c8a75b5385d9c82424732b73c45f865cd488327614d042078140444",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/d7aa62161c8a75b5385d9c82424732b73c45f865cd488327614d042078140444.json"
+    },
+    {
+      "question": "confidence_level",
+      "kind": "causal_study",
+      "chosen": "0.90",
+      "options": [
+        [
+          "0.95",
+          "95% interval (alpha 0.05)"
+        ],
+        [
+          "0.90",
+          "90% interval (alpha 0.10)"
+        ]
+      ],
+      "probabilities": {
+        "0.95": 0.3747,
+        "0.90": 0.6253
+      },
+      "probability_decimals": 4,
+      "state_sha256": "053383798e8870400ba5e0d06d7a18fbd5d15ce883a8b27f55a41c89e3a504b1",
+      "checkpoint": "laya-checkpoint:bd12df887789924672d1c848319caf9866a172183e6959beab369d9e20aaaa89",
+      "as_of": "2026-09-25T06:42:52.493557+00:00",
+      "digest": "971362ca80a187096105aa6637745c3af85338bd427d63cafc3326056ae99a68",
+      "record_path": "/home/harveybc/.local/share/causal-inference-m5phet/studies/decisions/971362ca80a187096105aa6637745c3af85338bd427d63cafc3326056ae99a68.json"
+    }
+  ],
+  "spec": null,
+  "status": "REFUSED",
+  "refusal": "NO_TREATMENT",
+  "why": "no column is the treatment; a causal study is about an intervention, and this spec names none."
+}
