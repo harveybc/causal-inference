@@ -64,6 +64,13 @@ RESERVED_QUESTIONS = (ESTIMATOR_QUESTION, MODEL_Y_QUESTION, MODEL_T_QUESTION, CO
 DATASET_UNREADABLE = "DATASET_UNREADABLE"
 COLUMN_NAME_UNUSABLE = "COLUMN_NAME_UNUSABLE"
 NO_ESTIMATOR_FOR_ESTIMAND = "NO_ESTIMATOR_FOR_ESTIMAND"
+#: one or more columns were left with no role -- because the chooser abstained on them under a declared confidence
+#: threshold -- and a study is not composed from a role map with holes in it
+ROLES_INCOMPLETE = "ROLES_INCOMPLETE"
+
+#: the refusal `m5phet.decide` gives an answer below the declared threshold. Repeated here so this module can tell an
+#: abstention (a question that was asked and not answered) from every other refusal, which stops the chooser.
+LOW_CONFIDENCE_ABSTAINED = "LOW_CONFIDENCE_ABSTAINED"
 
 ROLE_INSTRUCTIONS = ("Which role does the column {column!r} play in this causal study? The problem statement and this "
                      "column's summary are above, with the roles already given to the other columns. Choose exactly "
@@ -198,13 +205,18 @@ def _usable_name(name):
     return bool(name) and name == name.strip() and 0 < len(name) <= MAX_NAME_CHARACTERS
 
 
-def _ask_one(decider, *, kind, state, questions, as_of, record_dir):
+def _ask_one(decider, *, kind, state, questions, as_of, record_dir, gate=None):
     """One `decide.ask`, returning `{name: entry}`. The import is local so this module loads where m5phet does not.
 
     The fit interpreter holds EconML and no m5phet; the chat interpreter holds m5phet and no EconML. Profiling and
-    composing must work in both, so `m5phet.decide` is imported only on the path that actually asks."""
+    composing must work in both, so `m5phet.decide` is imported only on the path that actually asks.
+
+    `gate` carries the declared abstention threshold and the report it is cited from, or is `None` when no threshold
+    was declared. It is passed through unchanged: this module never decides what a confidence is worth."""
     from m5phet import decide
-    return decide.ask(decider, state, questions, kind=kind, as_of=as_of, record_dir=record_dir)
+    gate = gate or {}
+    return decide.ask(decider, state, questions, kind=kind, as_of=as_of, record_dir=record_dir,
+                      min_confidence=gate.get("min_confidence"), abstention_source=gate.get("abstention_source"))
 
 
 def _decision_of(entry, question):
@@ -216,12 +228,17 @@ def _decision_of(entry, question):
 
 
 def _record(made, entry, question):
-    """Keep one made decision, with its digest, in the order it was made."""
+    """Keep one made decision -- or one abstention -- with its digest, in the order it happened.
+
+    An abstention is kept here exactly like a choice, with `chosen: null` and the threshold it fell below, because a
+    question the checkpoint could not answer is a finding about the checkpoint and the run has to show it."""
     from m5phet import decide
     decision = entry["decision"]
     made.append({"question": question,
                  "kind": decision["kind"],
                  "chosen": decision["chosen"],
+                 "chosen_by": decision.get("chosen_by", "LAYA"),
+                 "abstention": deepcopy(decision.get("abstention")),
                  "options": deepcopy(decision["options"]),
                  "probabilities": deepcopy(decision["probabilities"]),
                  "probability_decimals": decision["probability_decimals"],
@@ -239,7 +256,7 @@ def _state(payload):
 
 
 def choose_study(decider, dataset, problem, *, space=None, as_of=None, record_dir=None, study_id=None,
-                 provenance="UNDECLARED", outcome_unit=None):
+                 provenance="UNDECLARED", outcome_unit=None, min_confidence=None, abstention_source=None):
     """Profile the dataset, ask Laya for every declared choice, and compose the spec those choices describe.
 
     `decider` is an `m5phet.web.engine.Engine` -- the worker route, the real checkpoint -- or a bare `Registry`.
@@ -247,42 +264,98 @@ def choose_study(decider, dataset, problem, *, space=None, as_of=None, record_di
     its option set and its own uncalibrated probabilities, and either the composed spec (`status: OK`) or the refusal
     that stopped it (`status: REFUSED`), by the name whoever raised it gave it. The decisions made before a refusal
     are kept and returned, because they are what the refusal is about.
+
+    `min_confidence` declares the abstention threshold and `abstention_source` the report that MEASURED this
+    checkpoint at it (WP20; `m5phet.decide.abstention_threshold` checks the number against that report's own bins and
+    refuses one nobody measured before a single question is asked). Under a threshold a role question that abstains
+    leaves its column **unassigned**, and an unassigned column is not silently excluded: the composition refuses
+    `ROLES_INCOMPLETE` and names the columns. Giving an abstained column `exclude` would be this module choosing the
+    column's role and calling the result Laya's study; the honest output of a chooser that could not choose is a
+    refusal that says which questions it could not answer.
     """
     space = space if space is not None else _space.study_space(probe=_space.declared)
-    made = []
+    made, abstained = [], []
     document = {"schema": CHOICE_SCHEMA, "kind": DECISION_KIND, "problem": problem,
-                "profile": None, "decisions": made, "spec": None, "status": "OK"}
+                "profile": None, "decisions": made, "abstained": abstained, "abstention": None,
+                "counts": None, "spec": None, "status": "OK"}
     if not isinstance(problem, str) or not problem.strip():
         return document | {"status": "REFUSED", "refusal": "STATE_REQUIRED",
                            "why": "a study is chosen for a stated problem; none was given."}
+    gate = None
+    if min_confidence is not None:
+        from m5phet import decide
+        citation, unresolved = decide.abstention_threshold(min_confidence, abstention_source)
+        if unresolved is not None:
+            # refused before the dataset is even read: a threshold nobody measured decides nothing here
+            return document | {"status": "REFUSED", "refusal": unresolved[0], "why": unresolved[1]}
+        gate = {"min_confidence": min_confidence, "abstention_source": abstention_source}
+        document["abstention"] = {"min_confidence": citation["min_confidence"], "source": citation}
     try:
         profile = profile_dataset(dataset)
         document["profile"] = profile
-        roles = _choose_roles(decider, profile, problem, space, made, as_of, record_dir)
+        roles = _choose_roles(decider, profile, problem, space, made, as_of, record_dir, gate, abstained)
+        _require_complete_roles(profile, roles, abstained)
         estimand = estimand_for(roles)
-        estimator = _choose_estimator(decider, profile, problem, roles, estimand, space, made, as_of, record_dir)
+        estimator = _choose_estimator(decider, profile, problem, roles, estimand, space, made, as_of, record_dir,
+                                      gate)
         nuisance = _choose_nuisance(decider, profile, problem, roles, estimand, estimator, space, made, as_of,
-                                    record_dir)
+                                    record_dir, gate)
         level = _choose_confidence(decider, problem, roles, estimand, estimator, nuisance, space, made, as_of,
-                                   record_dir)
+                                   record_dir, gate)
         spec = compose_spec(profile, roles, estimator, nuisance, level, made, space=space, study_id=study_id,
-                            provenance=provenance, outcome_unit=outcome_unit)
+                            provenance=provenance, outcome_unit=outcome_unit, abstained=abstained)
     except ChoiceRefused as refused:
-        return document | {"status": "REFUSED", "refusal": refused.refusal, "why": refused.why}
+        return document | {"counts": _counts(made, abstained), "status": "REFUSED",
+                           "refusal": refused.refusal, "why": refused.why}
     except _spec.SpecRefused as refused:
         # the composition the decisions describe is not a study this engine will fit. It is returned by the
         # validator's own name, with every decision kept, and it is not repaired here.
-        return document | {"status": "REFUSED", "refusal": refused.refusal, "why": refused.why}
-    return document | {"spec": spec}
+        return document | {"counts": _counts(made, abstained), "status": "REFUSED",
+                           "refusal": refused.refusal, "why": refused.why}
+    return document | {"counts": _counts(made, abstained), "spec": spec}
 
 
-def _choose_roles(decider, profile, problem, space, made, as_of, record_dir):
+def _counts(made, abstained):
+    """What the run did, in the three numbers a report needs: asked, answered above the threshold, abstained."""
+    return {"questions_asked": len(made),
+            "answered": sum(1 for entry in made if entry["chosen"] is not None),
+            "abstained": sum(1 for entry in made if entry["chosen"] is None),
+            "columns_abstained": list(abstained)}
+
+
+def _require_complete_roles(profile, roles, abstained=()):
+    """Raise `ROLES_INCOMPLETE` when a column of the dataset was left without a role.
+
+    This is the guard the whole threshold rests on. Once a question may abstain, the cheapest thing to do with an
+    unanswered column is to drop it -- and dropping it is the role `exclude`, given by this module and then reported
+    as part of a study Laya chose. So a hole in the role map stops the composition and names the columns, and the
+    person who wants the study anyway writes their role down as a human decision (`m5phet.decide.human_choice`)
+    instead of receiving it silently."""
+    unassigned = [column for column in profile["columns"] if column not in roles]
+    if not unassigned:
+        return roles
+    abstained = [column for column in abstained if column in unassigned]
+    raise ChoiceRefused(ROLES_INCOMPLETE,
+                        f"the columns {unassigned} were given no role"
+                        + (f"; the chooser abstained on {abstained} because its top probability was below the "
+                           f"declared threshold" if abstained else "")
+                        + ". A study is not composed from a role map with holes in it, and an unassigned column is "
+                          "not silently excluded: `exclude` is a role, and giving it here would be this module "
+                          "choosing what the question left open.")
+
+
+def _choose_roles(decider, profile, problem, space, made, as_of, record_dir, gate=None, abstained=None):
     """One decision per column, in the dataset's own order, each asked with what the earlier columns were given.
 
     Each column is asked exactly once, under its own name, with the five declared roles. The state carries the
     problem, this column's summary and the roles already assigned -- so the choice for the last column is made
-    knowing a treatment has already been named -- and nothing else."""
+    knowing a treatment has already been named -- and nothing else.
+
+    A column whose answer abstains under the declared threshold is left OUT of the role map and named in `abstained`.
+    The run goes on to the next column: an abstention is one question's finding, not a reason to stop asking the
+    others, and the count of how many columns the checkpoint could answer is exactly what WP20 set out to measure."""
     options, roles = role_options(space), {}
+    abstained = abstained if abstained is not None else []
     for column in profile["columns"]:
         if not _usable_name(column):
             raise ChoiceRefused(COLUMN_NAME_UNUSABLE,
@@ -296,14 +369,19 @@ def _choose_roles(decider, profile, problem, space, made, as_of, record_dir):
                         "dataset": {"rows": profile["rows"], "columns": profile["columns"]},
                         "column": {"name": column, **profile["columns_detail"][column]},
                         "roles_already_assigned": dict(roles)})
-        asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state,
+        asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state, gate=gate,
                          questions={column: {"options": options,
                                              "instructions": ROLE_INSTRUCTIONS.format(column=column)}})
-        roles[column] = _record(made, _decision_of(asked[column], column), column)
+        entry = asked[column]
+        if entry.get("status") != "OK" and entry.get("refusal") == LOW_CONFIDENCE_ABSTAINED:
+            _record(made, entry, column)            # `chosen: null`, with the threshold it fell below
+            abstained.append(column)
+            continue
+        roles[column] = _record(made, _decision_of(entry, column), column)
     return roles
 
 
-def _choose_estimator(decider, profile, problem, roles, estimand, space, made, as_of, record_dir):
+def _choose_estimator(decider, profile, problem, roles, estimand, space, made, as_of, record_dir, gate=None):
     options = estimator_options(estimand, space)
     if len(options) < 2:
         raise ChoiceRefused(NO_ESTIMATOR_FOR_ESTIMAND,
@@ -315,28 +393,30 @@ def _choose_estimator(decider, profile, problem, roles, estimand, space, made, a
                     "roles": dict(roles),
                     "estimand": estimand,
                     "modifier_declared": estimand == _space.CATE})
-    asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state,
+    asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state, gate=gate,
                      questions={ESTIMATOR_QUESTION: {"options": options, "instructions": ESTIMATOR_INSTRUCTIONS}})
     return _record(made, _decision_of(asked[ESTIMATOR_QUESTION], ESTIMATOR_QUESTION), ESTIMATOR_QUESTION)
 
 
-def _choose_nuisance(decider, profile, problem, roles, estimand, estimator, space, made, as_of, record_dir):
+def _choose_nuisance(decider, profile, problem, roles, estimand, estimator, space, made, as_of, record_dir,
+                     gate=None):
     """Both nuisance models, asked in one envelope from the same state: they are two roles of one declared list."""
     options = nuisance_options(space)
     state = _state({"problem": problem,
                     "dataset": {"rows": profile["rows"], "columns": profile["columns"]},
                     "roles": dict(roles), "estimand": estimand, "estimator": estimator})
-    asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state,
+    asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state, gate=gate,
                      questions={MODEL_Y_QUESTION: {"options": options, "instructions": MODEL_Y_INSTRUCTIONS},
                                 MODEL_T_QUESTION: {"options": options, "instructions": MODEL_T_INSTRUCTIONS}})
     return {role: _record(made, _decision_of(asked[role], role), role)
             for role in (MODEL_Y_QUESTION, MODEL_T_QUESTION)}
 
 
-def _choose_confidence(decider, problem, roles, estimand, estimator, nuisance, space, made, as_of, record_dir):
+def _choose_confidence(decider, problem, roles, estimand, estimator, nuisance, space, made, as_of, record_dir,
+                       gate=None):
     state = _state({"problem": problem, "roles": dict(roles), "estimand": estimand, "estimator": estimator,
                     "nuisance": dict(nuisance)})
-    asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state,
+    asked = _ask_one(decider, kind=DECISION_KIND, as_of=as_of, record_dir=record_dir, state=state, gate=gate,
                      questions={CONFIDENCE_QUESTION: {"options": confidence_options(space),
                                                       "instructions": CONFIDENCE_INSTRUCTIONS}})
     return _record(made, _decision_of(asked[CONFIDENCE_QUESTION], CONFIDENCE_QUESTION), CONFIDENCE_QUESTION)
@@ -345,13 +425,18 @@ def _choose_confidence(decider, problem, roles, estimand, estimator, nuisance, s
 # --- composing -----------------------------------------------------------------------------------------------------
 
 def compose_spec(profile, roles, estimator, nuisance, confidence_level, decisions, *, space=None, study_id=None,
-                 provenance="UNDECLARED", outcome_unit=None):
+                 provenance="UNDECLARED", outcome_unit=None, abstained=()):
     """The spec these choices describe, validated. Raises `study_spec.SpecRefused` when they describe no study.
 
     The identifying assumptions are NOT chosen: they are the ones this space declares a study of this estimand must
     state, copied in the space's own words. A chooser that could also decide which assumptions to claim would be
     choosing what the study is allowed to assume about the world, which is the person's claim to make and the
-    validator's to check."""
+    validator's to check.
+
+    A role map that does not cover every column of the profile raises `ROLES_INCOMPLETE` here, before anything is
+    composed -- so the refusal belongs to the composition, not to a later validator that would have seen only a
+    shorter column list and never known a question went unanswered."""
+    _require_complete_roles(profile, roles, abstained)
     space = space if space is not None else _space.study_space(probe=_space.declared)
     estimand = estimand_for(roles)
     spec = {

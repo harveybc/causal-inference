@@ -66,8 +66,11 @@ class FakeLaya:
 
     name, area = "laya_news", "classification"
 
-    def __init__(self, answers, *, backend="laya"):
+    def __init__(self, answers, *, backend="laya", confidence=None):
         self.answers, self.backend, self.seen = dict(answers), backend, []
+        #: question name -> the probability the chosen key carries. Without it every option shares the mass, which is
+        #: what the zero-shot checkpoint actually does and is below any threshold a measurement could justify.
+        self.confidence = dict(confidence or {})
 
     def capabilities(self):
         return {"provider": self.name, "operations": ["infer"], "families": ["classification"],
@@ -86,9 +89,10 @@ class FakeLaya:
             chosen = self.answers.get(name)
             if chosen is None or chosen not in keys:
                 raise AssertionError(f"the fake was not told what to answer for {name!r} among {keys}")
-            share = round(1.0 / len(keys), 4)
+            top = self.confidence.get(name)
+            share = round((1.0 - top) / (len(keys) - 1), 4) if top is not None else round(1.0 / len(keys), 4)
             probabilities = {key: share for key in keys}
-            probabilities[chosen] = round(1.0 - share * (len(keys) - 1), 4)
+            probabilities[chosen] = top if top is not None else round(1.0 - share * (len(keys) - 1), 4)
             answers[name] = {"type": "choice", "status": "OK", "label": chosen, "backend": self.backend,
                              "instructions": question.get("instructions"),
                              "options": [list(pair) for pair in question["options"]],
@@ -104,10 +108,17 @@ def registry_with(provider):
     return registry
 
 
-def answering(roles, **rest):
+def answering(roles, confidence=None, **rest):
     """A fake that gives every column the role the mapping names, and the declared answer to every other question."""
     return FakeLaya({**roles, "estimator": "LinearDML", "model_y": "lasso", "model_t": "lasso",
-                     "confidence_level": "0.95", **rest})
+                     "confidence_level": "0.95", **rest}, confidence=confidence)
+
+
+#: every question this chooser asks, answered at a confidence a measurement can justify. Used as the base, so a test
+#: about abstention changes exactly the questions it is about and nothing else.
+def confident(**overrides):
+    base = {name: 0.93 for name in list(MODIFIER_ROLES) + ["estimator", "model_y", "model_t", "confidence_level"]}
+    return {**base, **overrides}
 
 
 @pytest.fixture(scope="module")
@@ -365,7 +376,7 @@ def cli_arguments(**overrides):
     import argparse
     return argparse.Namespace(**{"dataset": None, "problem": PROBLEM, "out": None, "record_dir": None,
                                  "study_id": None, "provenance": "DEVELOPMENT", "outcome_unit": None,
-                                 "as_of": None, **overrides})
+                                 "as_of": None, "min_confidence": None, "abstention_source": None, **overrides})
 
 
 def test_the_cli_writes_the_spec_it_composed(tmp_path, modifier_csv, capsys):
@@ -392,3 +403,123 @@ def test_the_cli_writes_nothing_when_the_composition_is_refused(tmp_path, modifi
     assert not out.exists()
     printed = json.loads(capsys.readouterr().out)
     assert printed["status"] == "REFUSED" and printed["refusal"] == spec_module.TWO_OUTCOMES
+
+
+# --- WP20: the declared abstention threshold ------------------------------------------------------------------------
+
+#: the reliability bins WP09 measured on 450 independently labelled rows. The fixture below carries exactly these, so
+#: a threshold this suite declares is one that report resolved and the tests cannot drift from the measurement.
+MEASURED_BINS = [(0.0, 0.1, 0, None), (0.1, 0.2, 0, None), (0.2, 0.3, 0, None), (0.3, 0.4, 134, 0.3208955223880597),
+                 (0.4, 0.5, 152, 0.35526315789473684), (0.5, 0.6, 58, 0.29310344827586204),
+                 (0.6, 0.7, 22, 0.2727272727272727), (0.7, 0.8, 29, 0.3103448275862069),
+                 (0.8, 0.9, 24, 0.7083333333333334), (0.9, 1.0, 31, 1.0)]
+
+THRESHOLD = 0.8
+
+
+@pytest.fixture(scope="module")
+def quality_report(tmp_path_factory):
+    """A `m5phet-evaluation-report/1` document with WP09's measured bins: the citation a threshold needs."""
+    path = tmp_path_factory.mktemp("wp09") / "report_laya_zero_shot.json"
+    path.write_text(json.dumps({
+        "version": "m5phet-evaluation-report/1", "stage": "laya_zero_shot", "family": "classification",
+        "protocol_digest": "b9aefb3c" + "0" * 56, "corpus_seal": "31257d47" + "0" * 56,
+        "metric_sets": [{"name": "calibration", "values": {"reliability": {
+            "bins": [{"bin": [low, high], "count": count, "accuracy": accuracy}
+                     for low, high, count, accuracy in MEASURED_BINS]}}}]}), encoding="utf-8")
+    return path
+
+
+def test_a_role_answered_below_the_threshold_leaves_its_column_unassigned_and_refuses_the_composition(
+        modifier_csv, quality_report, tmp_path):
+    """The whole rule in one run: one column below the threshold, and no study is composed from the hole it leaves."""
+    fake = answering(MODIFIER_ROLES, confidence=confident(baseline=0.41))
+    document = chooser.choose_study(registry_with(fake), modifier_csv, PROBLEM, space=SERVING_SPACE,
+                                    record_dir=tmp_path / "decisions", provenance="DEVELOPMENT",
+                                    min_confidence=THRESHOLD, abstention_source=quality_report)
+    assert document["status"] == "REFUSED"
+    assert document["refusal"] == chooser.ROLES_INCOMPLETE
+    assert "baseline" in document["why"]
+    assert document["spec"] is None
+    assert document["abstained"] == ["baseline"]
+    # the other three columns were answered above the threshold, and the run stopped before the estimator question
+    assert document["counts"] == {"questions_asked": 4, "answered": 3, "abstained": 1,
+                                  "columns_abstained": ["baseline"]}
+    # the abstention is recorded like any other decision, with no choice in it and the threshold it fell below
+    abstention, = [entry for entry in document["decisions"] if entry["chosen"] is None]
+    assert abstention["question"] == "baseline"
+    assert abstention["abstention"]["top_probability"] == 0.41
+    assert abstention["abstention"]["threshold"]["path"] == str(quality_report)
+    assert decide.load(Path(abstention["record_path"]))["chosen"] is None
+
+
+def test_every_column_abstaining_names_every_column_and_composes_nothing(modifier_csv, quality_report):
+    """The zero-shot checkpoint's own behaviour: mass spread over five roles, which is below any measured threshold."""
+    fake = answering(MODIFIER_ROLES)                      # no confidence declared: every option shares the mass
+    document = chooser.choose_study(registry_with(fake), modifier_csv, PROBLEM, space=SERVING_SPACE,
+                                    provenance="DEVELOPMENT", min_confidence=THRESHOLD,
+                                    abstention_source=quality_report)
+    assert document["refusal"] == chooser.ROLES_INCOMPLETE
+    assert document["abstained"] == ["baseline", "confounder", "treatment", "outcome"]
+    assert document["counts"]["answered"] == 0 and document["counts"]["abstained"] == 4
+    assert all(entry["chosen"] is None for entry in document["decisions"])
+
+
+def test_with_every_answer_above_the_threshold_the_study_is_composed_exactly_as_without_one(
+        modifier_csv, quality_report):
+    confident_fake = answering(MODIFIER_ROLES, confidence=confident())
+    gated = chooser.choose_study(registry_with(confident_fake), modifier_csv, PROBLEM, space=SERVING_SPACE,
+                                 provenance="DEVELOPMENT", min_confidence=THRESHOLD,
+                                 abstention_source=quality_report)
+    assert gated["status"] == "OK"
+    assert gated["counts"] == {"questions_asked": 8, "answered": 8, "abstained": 0, "columns_abstained": []}
+    assert spec_module.validate_spec(gated["spec"], SERVING_SPACE) == gated["spec"]
+    assert gated["spec"]["roles"] == MODIFIER_ROLES
+    # and the gate changed nothing about the study itself
+    ungated = chooser.choose_study(registry_with(answering(MODIFIER_ROLES, confidence=confident())), modifier_csv,
+                                   PROBLEM, space=SERVING_SPACE, provenance="DEVELOPMENT")
+    assert ungated["spec"]["roles"] == gated["spec"]["roles"]
+    assert ungated["spec"]["estimator"] == gated["spec"]["estimator"]
+
+
+def test_a_threshold_with_no_cited_measurement_refuses_before_the_dataset_is_even_read(modifier_csv):
+    fake = answering(MODIFIER_ROLES, confidence=confident())
+    document = chooser.choose_study(registry_with(fake), modifier_csv, PROBLEM, space=SERVING_SPACE,
+                                    provenance="DEVELOPMENT", min_confidence=THRESHOLD)
+    assert document["refusal"] == decide.UNCITED_THRESHOLD
+    assert document["profile"] is None and document["decisions"] == []
+    assert fake.seen == []
+
+
+def test_a_threshold_the_cited_report_never_resolved_is_refused_by_name(modifier_csv, quality_report):
+    fake = answering(MODIFIER_ROLES, confidence=confident())
+    document = chooser.choose_study(registry_with(fake), modifier_csv, PROBLEM, space=SERVING_SPACE,
+                                    provenance="DEVELOPMENT", min_confidence=0.85, abstention_source=quality_report)
+    assert document["refusal"] == decide.THRESHOLD_NOT_MEASURED
+    assert fake.seen == []
+
+
+def test_compose_spec_refuses_a_role_map_with_a_hole_in_it(modifier_csv):
+    """Directly, so the refusal belongs to the composition and not to the loop that happened to call it."""
+    profile = chooser.profile_dataset(modifier_csv)
+    partial = {name: role for name, role in MODIFIER_ROLES.items() if name != "baseline"}
+    with pytest.raises(chooser.ChoiceRefused) as refused:
+        chooser.compose_spec(profile, partial, "LinearDML", {"model_y": "lasso", "model_t": "lasso"}, "0.95", [],
+                             space=SERVING_SPACE, provenance="DEVELOPMENT", abstained=["baseline"])
+    assert refused.value.refusal == chooser.ROLES_INCOMPLETE
+    assert "baseline" in refused.value.why
+
+
+def test_the_cli_prints_the_abstained_columns_and_writes_no_spec(tmp_path, modifier_csv, quality_report, capsys):
+    from causal_inference_provider import __main__ as cli
+    out = tmp_path / "study_spec.json"
+    args = cli_arguments(dataset=modifier_csv, out=out, record_dir=tmp_path / "decisions",
+                         min_confidence=THRESHOLD, abstention_source=quality_report)
+    fake = answering(MODIFIER_ROLES, confidence=confident(baseline=0.41, confounder=0.55))
+    assert cli.choose_study_command(args, decider=registry_with(fake)) == 2
+    assert not out.exists()
+    captured = capsys.readouterr()
+    printed = json.loads(captured.out)
+    assert printed["refusal"] == chooser.ROLES_INCOMPLETE
+    assert printed["abstained"] == ["baseline", "confounder"]
+    assert "2 abstained" in captured.err and "'baseline'" in captured.err and "'confounder'" in captured.err

@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import sys
 import warnings
 
 import pandas as pd
@@ -137,12 +138,24 @@ def choose_study_command(args, decider=None):
         decider = Engine()
     document = chooser.choose_study(decider, args.dataset, args.problem, as_of=args.as_of,
                                     record_dir=args.record_dir, study_id=args.study_id,
-                                    provenance=args.provenance, outcome_unit=args.outcome_unit)
+                                    provenance=args.provenance, outcome_unit=args.outcome_unit,
+                                    min_confidence=args.min_confidence,
+                                    abstention_source=args.abstention_source)
     if document["status"] == "OK" and args.out is not None:
         args.out.write_text(json.dumps(document["spec"], indent=2, sort_keys=True, allow_nan=False) + "\n",
                             encoding="utf-8")
         document = document | {"spec_path": str(args.out), "spec_sha256": _spec.spec_digest(document["spec"])}
     print(json.dumps(document, indent=2, allow_nan=False))
+    # the counts and the abstained columns also go to stderr, in words: stdout is the document and stays parseable,
+    # and a person reading a terminal must not have to grep a JSON blob to learn which questions went unanswered
+    counts = document.get("counts") or {}
+    if counts:
+        print(f"choose-study: {counts['answered']} of {counts['questions_asked']} questions answered, "
+              f"{counts['abstained']} abstained", file=sys.stderr)
+    if document.get("abstained"):
+        print(f"choose-study: no role was recorded for {document['abstained']}; the chooser's top probability was "
+              f"below the declared threshold {(document.get('abstention') or {}).get('min_confidence')} on each of "
+              f"them, and an unassigned column is not silently excluded", file=sys.stderr)
     return 0 if document["status"] == "OK" else 2
 
 
@@ -193,6 +206,16 @@ def main():
                         help="The provenance of the data. A chooser cannot establish it, so it is declared here.")
     choose.add_argument("--outcome-unit", default=None, help="The unit the outcome is measured in.")
     choose.add_argument("--as-of", default=None, help="The clock the decisions are stamped at; now by default.")
+    choose.add_argument("--min-confidence", type=float, default=None,
+                        help="The declared abstention threshold. An answer whose top probability is below it is not "
+                             "a choice: it is recorded as an abstention with no choice, its column is left with no "
+                             "role, and the composition refuses ROLES_INCOMPLETE naming those columns. It is passed "
+                             "with --abstention-source and is refused without one.")
+    choose.add_argument("--abstention-source", type=Path, default=None,
+                        help="The evaluation report that MEASURED this checkpoint at that confidence. The threshold "
+                             "is checked against the report's own reliability bins, so a number nobody measured "
+                             "refuses every question (UNCITED_THRESHOLD / THRESHOLD_NOT_MEASURED) and nothing is "
+                             "asked.")
     args = parser.parse_args()
     state_ref = None
     extra = {}
