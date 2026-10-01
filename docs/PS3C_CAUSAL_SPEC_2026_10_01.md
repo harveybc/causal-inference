@@ -97,7 +97,7 @@ TRAIN split and is not profiled or selected from.
 | `economic_calendar__scheduled_events__fxmacrodata__release_calendar` — 4 appearances, 2026-02-05 → 2027-07-14 | YES | the forward schedule only: defines episode existence (`C` in the DAG), never a surprise |
 | `feature-eng/tests/data/economic_calendar_2011_2021.csv` (lake `none`, consensus + actuals, assumed clock) | **NO** | **NOT_ADMISSIBLE_NO_CONTRACT** — the retained `eurusd-events-assumed-clock-v1` study rests on it and stays DEVELOPMENT evidence |
 | FRED `release_actuals/*`, `fred_release_date_proxy` | NO (not among the 198 as calendar entities; FRED series appear as covariate entities only) | NOT_ADMISSIBLE_NO_CONTRACT as episode sources; admissible as `W_pre` covariates where their appearance is contracted |
-| EURUSD bars `financial-data/market_data/forex/g10/eurusd/*.parquet` | **NO** — no EURUSD appearance is among the 198 | **NOT_ADMISSIBLE_NO_CONTRACT** for the outcome `Y_h` of the EURUSD study. Subplan 5.1 forbids substituting the asset for convenience, so this lane does NOT re-point the study; the contracted FX entities (`usdcad`, `gbpjpy`, `nzdusd` at 4 frequencies; daily `usdbrl`, `usdinr`, `usdtry`, `usdtwd`) can carry **separate** studies with their own dossiers if the owner/Satoshi so decides. Decision pending, not taken here |
+| EURUSD bars `financial-data/market_data/forex/g10/eurusd/*.parquet` | **NO** — no EURUSD appearance is among the 198 | the uncontracted files are **NOT_ADMISSIBLE_NO_CONTRACT**; the study's outcome variable is **`NOT_EXECUTABLE_NO_CONTRACTED_PRICE`** until a EURUSD price appearance is sealed through the governed route. **Ruling (Satoshi, 2026-10-01, owner open question 13): no substitution of the asset** — `usdcad`, `gbpjpy`, `nzdusd` do not stand in; lane B prepares the sealing request |
 | ETH 4h model-ready view (TRAIN `[0, 13699)` = 2017-09-28 → 2023-12-31, has CLOSE) | YES (immutable predictor contract) | a possible outcome series for a crypto-asset event study; not the FX question of section 5.1; not bound here |
 
 Caveat carried verbatim from lane B: `availability_time` is UNAVAILABLE for every census variable — no per-family
@@ -107,9 +107,26 @@ must not be written as `OBSERVED_*` from a census appearance alone. The raw `ann
 and the C127 appearances (different `physical_sha256`, resampled to a frequency) are different objects; a dossier names
 the appearance it read.
 
-Consequence for the three rungs today: with the contracted sources, rung 1 can run on the fxmacrodata appearances
-against a contracted outcome series; rung 2 and rung 3 are `NOT_IDENTIFIED` for every cell by construction
-(`EXPECTATION_IS_MODEL_BASED`, and no observed availability clock). No contracted source moves that.
+Consequence for the three rungs today: the treatment side is contracted (fxmacrodata appearances), the outcome side
+is not. Rung 1 is `NOT_EVALUATED` until the EURUSD price appearance is sealed; rung 2 and rung 3 are
+`NOT_IDENTIFIED` for every cell by construction (`EXPECTATION_IS_MODEL_BASED`, no observed availability clock) and
+would stay so even after sealing. No contracted source moves that.
+
+### 1.5 The single binding slot: `data_manifest.asset_appearance`
+
+Every rung reads the outcome price series through one slot of the dossier contract and nowhere else, so that the
+moment a sealed EURUSD appearance exists the study binds to it **without redesign**:
+
+| state | fields (validated by `causal_dossier.v1.schema.json`) | effect on the rungs |
+|---|---|---|
+| `CONTRACTED` | `appearance_id` (`app_` + 24 hex), `dataset_id`, `entity`, `resource_sha256` (the appearance's `physical_sha256`), `contract_id`, `contract_sha256`, `train_rows` `[start, end)`, `frequency`, `period`, `contracts_document_sha256` (the FINANCIAL_TRAIN_CONTRACTS document the ids were read from) | rung 1 may run inside `train_rows` only; rungs 2–3 decided by their own checks |
+| `NOT_EXECUTABLE_NO_CONTRACTED_PRICE` | `entity`, `reason`, `open_question` | rung 1 forced `NOT_EVALUATED`; rungs 2–3 in {`NOT_EVALUATED`, `NOT_IDENTIFIED`}; `selection.causal_evidence_level` forced `NONE` |
+
+Rules the schema enforces and the predictor tests exercise for both states: a branch name, a short digest, a
+one-element `train_rows` or an unknown frequency is refused; a missing binding field is refused; any state other than
+the two is refused; supplying the contracted slot and nothing else lets a rung-1 `ASSOCIATION_REPORTED` validate.
+The retained development studies on the uncontracted bars keep their verdicts as DEVELOPMENT evidence and are
+filed with the slot in the `NOT_EXECUTABLE_NO_CONTRACTED_PRICE` state.
 
 ### 1.2 The episode (one row = one identified release, never one filled hour)
 
@@ -361,6 +378,8 @@ states separate, `NOT_EVALUATED` and `NOT_IDENTIFIED` distinct from zero, `emitt
 - GCMI, PCMCI+, pre-event placebo, negative-control outcome, E-value: specified, not implemented.
 - A consensus feed with an observed publication instant (purchase) is the only thing that can move any cell out of
   `NOT_IDENTIFIED`; owner's decision, recorded in `stage13_consensus_gap.md`.
+- A sealed EURUSD price appearance (owner open question 13, lane B preparing the sealing request) is the only thing
+  that moves rung 1 out of `NOT_EVALUATED`; it binds through `data_manifest.asset_appearance` (section 1.5).
 - Registration of the five calendar resources under data-gov contracts: operator act.
 - The fxmacrodata instants are declared by the dataset; nothing here can verify them (65 of 66 types show a fixed
   posting rule; `initial_jobless_claims` stamped on Saturdays).
