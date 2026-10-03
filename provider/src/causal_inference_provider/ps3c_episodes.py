@@ -375,7 +375,8 @@ def build_crossing_episodes(bars, *, train_end, feature_values=None, feature_nam
     for i in np.where(ctrl)[0] + 1:
         if grid[i] - lastc < control_stride_h * HOUR:
             continue
-        if len(tt) and np.min(np.abs(tt - grid[i])) < min_gap_h * HOUR:
+        past = tt[tt <= grid[i]]  # only past crossings may exclude a control (no selection on the future)
+        if len(past) and grid[i] - past[-1] < min_gap_h * HOUR:
             continue
         controls.append(i)
         lastc = grid[i]

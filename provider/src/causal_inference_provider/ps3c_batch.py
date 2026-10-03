@@ -127,14 +127,15 @@ def asset_slot(contract, dig, bdir_digests):
 # --------------------------------------------------------------------------------------------- episodes
 
 
-def crossing_episodes(X, Y, fid, q=0.8, band_q=0.6, min_gap_h=24, stride_h=6):
+def crossing_episodes(X, Y, fid, q=0.8, band_q=0.6, min_gap_h=24, stride_h=6, threshold=None, band=None):
     """A=1: first available crossing of the TRAIN q80 threshold (row t-1 below, row t at/above).
     A=0: rows that stayed below with the previous value inside [q60, q80). W from row t-1."""
     x = X[fid].to_numpy(float)
     ok = np.isfinite(x)
     if ok.sum() < 200 or np.nanstd(x) == 0:
         return None, {"reason": "TOO_FEW_FINITE_OR_CONSTANT"}
-    thr, band = float(np.nanquantile(x, q)), float(np.nanquantile(x, band_q))
+    thr = float(np.nanquantile(x, q)) if threshold is None else float(threshold)
+    band = float(np.nanquantile(x, band_q)) if band is None else float(band)
     if not band < thr:
         return None, {"reason": "THRESHOLD_BAND_DEGENERATE", "threshold": thr}
     tn = _ns(X["t_decision_utc"])
@@ -159,7 +160,10 @@ def crossing_episodes(X, Y, fid, q=0.8, band_q=0.6, min_gap_h=24, stride_h=6):
         ti = tn[i]
         if lastc is not None and (ti - lastc) < stride_h * 3600 * 10**9:
             continue
-        if len(tt) and np.min(np.abs(tt - ti)) < min_gap_h * 3600 * 10**9:
+        # only PAST crossings may exclude a control: excluding rows followed by a crossing would
+        # select controls on their future path (a leak that manufactures an "effect")
+        past = tt[tt <= ti]
+        if len(past) and (ti - past[-1]) < min_gap_h * 3600 * 10**9:
             continue
         controls.append(i)
         lastc = ti
@@ -173,12 +177,16 @@ def crossing_episodes(X, Y, fid, q=0.8, band_q=0.6, min_gap_h=24, stride_h=6):
                        "A": np.isin(rows, treated).astype(float),
                        "W_x_prev": x[pre],
                        "W_x_trend_24": x[pre] - x[np.clip(pre - 24, 0, None)]})
-    for c in H_BASE:
+    # For an endogenous transition the recent path is UPSTREAM of A (a confounder), so it enters W;
+    # the placebo is a distant pre-period return (24h ending 144h before the pre-row), a negative-control
+    # outcome that the transition cannot have caused.
+    for c in [*H_BASE, *PLACEBO_PRE]:
         if c in X and c != fid:
             ep[f"W_{c}"] = X[c].to_numpy(float)[pre]
-    for c in PLACEBO_PRE:
-        if c in X and c != fid:
-            ep[f"Ypre_{c}"] = X[c].to_numpy(float)[pre]
+    if "px.logret_24h" in X:
+        j = np.searchsorted(tn, tn[pre] - 144 * H_NS, side="right") - 1
+        far = X["px.logret_24h"].to_numpy(float)[np.clip(j, 0, None)]
+        ep["Ypre_distant_24h_ending_t_minus_145h"] = np.where(j >= 0, far, np.nan)
     for name, *_ in TARGETS:
         ep[name] = Y[name].to_numpy(float)[rows]
     ep["M_first_hour"] = Y["Y_s_1h"].to_numpy(float)[rows]

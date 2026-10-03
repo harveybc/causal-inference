@@ -111,3 +111,39 @@ def test_batch_runner_refuses_tampered_lane_a_bytes(tmp_path):
     with pytest.raises(SystemExit, match="digest mismatch"):
         ps3c_batch.main(["--lane-a-batch", lane, "--inputs", str(tmp_path), "--lane-a-code", "x",
                          "--out", str(tmp_path / "o"), "--batch", "b", "--revision", "0123456"])
+
+
+def test_crossing_episode_membership_never_depends_on_the_future(tmp_path):
+    """With the TRAIN threshold fixed, perturbing the feature after row k leaves every earlier episode unchanged."""
+    lane = make_lane_a_batch(str(tmp_path / "laneA"), n_hours=24 * 400)
+    X, Y, *_ = ps3c_batch.load_batch(lane)
+    x = X["ta.osc"].to_numpy()
+    thr, band = np.nanquantile(x, 0.8), np.nanquantile(x, 0.6)
+    k = len(X) // 2
+    a, _ = ps3c_batch.crossing_episodes(X, Y, "ta.osc", threshold=thr, band=band)
+    X2 = X.copy()
+    X2.loc[X2.index[k:], "ta.osc"] = x[k:] * -3.0 + 1.0
+    b, _ = ps3c_batch.crossing_episodes(X2, Y, "ta.osc", threshold=thr, band=band)
+    cut = X["t_decision_utc"].iloc[k - 1]
+    cols = ["decision_time", "A", "W_x_prev"]
+    ea = a[a.decision_time <= cut][cols].reset_index(drop=True)
+    eb = b[b.decision_time <= cut][cols].reset_index(drop=True)
+    assert len(ea) > 50
+    pd.testing.assert_frame_equal(ea, eb)
+
+
+def test_controls_are_not_selected_on_a_future_crossing():
+    t = pd.date_range("2020-01-06T01:00:00Z", periods=400, freq="h")
+    x = np.full(400, 0.65)
+    x[::50] = 0.0
+    x[200] = 1.0  # one crossing at row 200
+    X = pd.DataFrame({"t_decision_utc": t, "row_id": np.arange(400), "f": x})
+    Y = pd.DataFrame({"t_decision_utc": t, "row_id": np.arange(400),
+                      **{name: np.zeros(400) for name, *_ in ps3c_batch.TARGETS}})
+    ep, info = ps3c_batch.crossing_episodes(X, Y, "f", threshold=0.8, band=0.5, stride_h=1)
+    assert ep is not None, info
+    ctrl_times = ep.loc[ep.A == 0, "decision_time"]
+    cross_t = t[200]
+    # rows in the 24h BEFORE the crossing remain eligible controls; rows within 24h AFTER it are excluded
+    assert ((ctrl_times < cross_t) & (ctrl_times >= cross_t - pd.Timedelta(hours=24))).any()
+    assert not ((ctrl_times > cross_t) & (ctrl_times < cross_t + pd.Timedelta(hours=24))).any()
