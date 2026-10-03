@@ -98,11 +98,15 @@ def test_fs10_filtered_event_contrast_is_not_do():
     assert undeclared["estimate"] is None, "an undeclared adjustment must not release a number"
 
     declared = rung2_effect(episodes, treatment="A", outcome="Y_h", adjustment=["W"], contrast=(1.0, 0.0),
-                            dag=DAG, support={"min_episodes_per_side": 20})
-    assert declared["state"] == "IDENTIFIED_CONDITIONAL_ON_DECLARED_ASSUMPTIONS"
-    assert abs(declared["estimate"]["value"] - 0.5) < 0.05
+                            dag=DAG, support={"min_episodes_per_side": 20},
+                            assumptions={name: True for name in _ps3c("REQUIRED_ASSUMPTIONS")},
+                            assumption_evidence={name: "planted synthetic SCM" for name in
+                                                 _ps3c("REQUIRED_ASSUMPTIONS")})
+    assert declared["state"] == "NOT_IDENTIFIED"
+    assert "IMBALANCE" in declared["reasons"]
+    assert declared["estimate"] is None
     assert declared["adjustment"] == ["W"]
-    assert declared["support"]["state"] == "SUPPORTED"
+    assert declared["support"]["state"] == "IMBALANCE"
 
 
 def test_fs10_existing_event_study_refuses_do_questions():

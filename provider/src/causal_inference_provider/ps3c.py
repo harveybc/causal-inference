@@ -84,6 +84,17 @@ def _columns(episodes):
     return cols, n
 
 
+def estimand_population_identity(episode_ids, *, treatment, outcome, contrast, treatment_kind):
+    """Stable identity for a declared estimand on an exact ordered episode population."""
+    ids = [str(x) for x in episode_ids]
+    population_sha = hashlib.sha256(json.dumps(ids, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+    estimand = {"treatment": str(treatment), "outcome": str(outcome),
+                "contrast": [float(contrast[0]), float(contrast[1])],
+                "treatment_kind": str(treatment_kind), "population_sha256": population_sha}
+    estimand_sha = hashlib.sha256(json.dumps(estimand, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {"population_n": len(ids), "population_sha256": population_sha, "estimand_id": estimand_sha}
+
+
 def _num(cols, name):
     v = cols[name]
     try:
@@ -329,7 +340,8 @@ def _boot_mean_se(psi, rng, reps=200):
 
 
 def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, support=None, node_columns=None,
-                 treatment_kind="AUTO", context=None, assumptions=None, placebo_outcomes=(), negative_controls=(),
+                 treatment_kind="AUTO", context=None, assumptions=None, assumption_evidence=None,
+                 placebo_outcomes=(), negative_controls=(),
                  placebo_episodes=None, modifiers=(), time_key=None, history=None, n_boot=200, seed=1729,
                  estimand=None, treatment_node=None, outcome_node=None):
     """Effect of a historically observed intervention, identified only under declared assumptions.
@@ -337,8 +349,9 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
     ``adjustment`` lists DAG nodes (resolved to columns through ``node_columns``). ``contrast`` is
     (a, a0). ``support`` keys: ``min_episodes_per_side`` (20), ``quantiles`` ((0.01, 0.99)),
     ``bandwidth_sd`` (0.5), ``residual_variance_floor`` (0.05), ``propensity_bounds`` ((0.05, 0.95)),
-    ``restrict_to_overlap`` (True: binary estimand declared on the overlap population),
-    ``balance_bound`` (0.1). ``context`` may carry ``publication_clock`` and ``expectation_kind``.
+    ``restrict_to_overlap`` is forbidden (PS3-C does not trim), ``balance_bound`` (0.1).
+    ``assumption_evidence`` names evidence references; a boolean declaration alone is not evidence.
+    ``context`` may carry ``publication_clock`` and ``expectation_kind``.
     """
     support = dict(support or {})
     min_side = int(support.get("min_episodes_per_side", 20))
@@ -353,6 +366,10 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
                               seed=seed, permutations=min(200, max(n_boot, 50)),
                               placebo_outcomes=placebo_outcomes, negative_controls=negative_controls)
     reasons = []
+    balance_bound = float(support.get("balance_bound", 0.1))
+    if not math.isfinite(balance_bound) or balance_bound < 0 or balance_bound > 0.1:
+        reasons.append("BALANCE_BOUND_EXCEEDS_SPEC")
+        balance_bound = min(max(balance_bound, 0.0), 0.1) if math.isfinite(balance_bound) else 0.1
     ctx = dict(context or {})
     if ctx.get("publication_clock") == "ASSUMED_SCHEDULED_PUBLICATION":
         reasons.append("ASSUMED_PUBLICATION_CLOCK")
@@ -360,11 +377,18 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
         reasons.append("EXPECTATION_IS_MODEL_BASED")
     if ctx.get("expectation_kind") == "NONE":
         reasons.append("NO_EXPECTATION")
-    declared = {k: True for k in REQUIRED_ASSUMPTIONS} if assumptions is None else dict(assumptions)
-    if any(declared.get(k) is not True for k in REQUIRED_ASSUMPTIONS):
-        reasons.append("ASSUMPTIONS_NOT_DECLARED_TRUE")
+    declared = {} if assumptions is None else dict(assumptions)
+    evidence = {} if assumption_evidence is None else dict(assumption_evidence)
+    unverified = []
+    for name in REQUIRED_ASSUMPTIONS:
+        ref = evidence.get(name)
+        if declared.get(name) is not True or not isinstance(ref, str) or not ref.strip():
+            unverified.append(name)
+            reasons.append(f"ASSUMPTION_NOT_EVIDENCED_{name}")
     out = {"state": NOT_IDENTIFIED, "reasons": reasons, "contrast": [float(contrast[0]), float(contrast[1])],
            "adjustment": None if adjustment is None else list(adjustment), "assumptions_declared": declared,
+           "assumptions_evidence": {k: v for k, v in evidence.items() if isinstance(v, str)},
+           "assumptions_unverified": unverified,
            "support": {"state": NOT_EVALUATED}, "placebo": {"state": "NOT_RUN", "tests": []},
            "sensitivity": {}, "estimate": None, "rung1": rung1, "diagnostics": {}}
     if dag is not None:
@@ -396,6 +420,9 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
     kind = _treatment_kind(a, treatment_kind)
     out["diagnostics"]["treatment_kind"] = kind
     out["diagnostics"]["rows_dropped_incomplete"] = int((~mask).sum())
+    ids = cols.get("episode_id", np.arange(n).astype(str))[order][mask]
+    out["population"] = estimand_population_identity(ids, treatment=treatment, outcome=outcome,
+                                                     contrast=contrast, treatment_kind=kind)
     a0, a1 = float(contrast[1]), float(contrast[0])
     if kind == "BINARY":
         out["estimand"] = estimand or f"ATE: E[{outcome}|do({treatment}=1)]-E[{outcome}|do({treatment}=0)]"
@@ -468,21 +495,24 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
         else:
             x = st.add_const(w)
             e = st.crossfit_predict(x, t, logistic_model=True) if w.shape[1] else np.full(len(t), t.mean())
-            pb = support.get("propensity_bounds", (0.05, 0.95))
+            requested_pb = tuple(map(float, support.get("propensity_bounds", (0.05, 0.95))))
+            if len(requested_pb) != 2 or requested_pb[0] >= requested_pb[1]:
+                reasons.append("INVALID_PROPENSITY_BOUNDS")
+                requested_pb = (0.05, 0.95)
+            if requested_pb[0] < 0.05 or requested_pb[1] > 0.95:
+                reasons.append("PROPENSITY_BOUNDS_EXCEED_SPEC")
+            pb = (max(0.05, requested_pb[0]), min(0.95, requested_pb[1]))
+            sup["propensity_bounds"] = [float(pb[0]), float(pb[1])]
             sup["propensity_range"] = [float(e.min()), float(e.max())]
             inside = (e >= pb[0]) & (e <= pb[1])
-            restrict = bool(support.get("restrict_to_overlap", True))
+            restrict = bool(support.get("restrict_to_overlap", False))
+            sup["n_population"] = int(len(t))
             if not inside.all():
-                if restrict and min(int(t[inside].sum()), int((1 - t[inside]).sum())) >= min_side:
-                    out["sensitivity"]["population_restricted_to_overlap_dropped"] = int((~inside).sum())
-                    out["estimand"] = out["estimand"].replace("ATE:", "ATE on the overlap population "
-                                                              f"(propensity in [{pb[0]}, {pb[1]}]):")
-                    a, y, w, t, e = a[inside], y[inside], w[inside], t[inside], e[inside]
-                    sup["n_per_side"] = [int(t.sum()), int((1 - t).sum())]
-                    sup["state"] = "SUPPORTED"
-                else:
-                    sup["state"] = "OVERLAP_SCREEN_FAILED"
-                    reasons.append("OVERLAP_SCREEN_FAILED")
+                sup["state"] = "OVERLAP_SCREEN_FAILED"
+                reasons.append("OVERLAP_SCREEN_FAILED")
+            elif restrict:
+                sup["state"] = "OVERLAP_SCREEN_FAILED"
+                reasons.append("TRIMMING_FORBIDDEN")
             else:
                 sup["state"] = "SUPPORTED"
             if sup["state"] == "SUPPORTED":
@@ -511,8 +541,11 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
                     "robustness_value_q1": st.robustness_value(tg, gfit["df"], 1.0),
                     "robustness_value_q1_alpha05": st.robustness_value(tg, gfit["df"], 1.0, alpha=0.05),
                 })
-    if sup.get("balance_max_smd") is not None and sup["balance_max_smd"] > float(support.get("balance_bound", 0.1)):
-        out["sensitivity"]["balance_note"] = "IMBALANCE: max SMD above bound; sensitivity only, not a blocker"
+    sup["balance_bound"] = balance_bound
+    if sup.get("balance_max_smd") is not None and sup["balance_max_smd"] > balance_bound:
+        reasons.append("IMBALANCE")
+        sup["state"] = "IMBALANCE"
+        out["sensitivity"]["balance_note"] = "IMBALANCE: max SMD above declared identification bound"
     out["support"] = sup
 
     # CATE by declared pre-event modifiers (within support only)
@@ -952,7 +985,8 @@ def _rename(eq, inv):
 
 _RUNG1_KEYS = {"state", "estimators", "effective_n", "conditioning_set", "multiplicity", "evidence"}
 _RUNG2_KEYS = {"state", "reasons", "estimand", "contrast", "dag", "adjustment", "excluded_from_adjustment",
-               "assumptions_declared", "estimator", "support", "placebo", "sensitivity", "estimate"}
+               "assumptions_declared", "assumptions_evidence", "assumptions_unverified", "population",
+               "estimator", "support", "placebo", "sensitivity", "estimate"}
 _RUNG3_KEYS = {"state", "label", "reasons", "scm", "abduction", "action", "prediction", "sensitivity"}
 
 

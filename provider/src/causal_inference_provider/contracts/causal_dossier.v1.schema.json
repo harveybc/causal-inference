@@ -671,6 +671,36 @@
             "type": "boolean"
           }
         },
+        "assumptions_evidence": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Named evidence references; a true declaration by itself is not evidence."
+        },
+        "assumptions_unverified": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "population": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "population_n",
+            "population_sha256",
+            "estimand_id"
+          ],
+          "properties": {
+            "population_n": {"type": "integer", "minimum": 0},
+            "population_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "estimand_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        },
         "estimator": {
           "type": "object",
           "additionalProperties": false,
@@ -706,6 +736,7 @@
                 "SUPPORTED",
                 "NO_COMMON_SUPPORT",
                 "OVERLAP_SCREEN_FAILED",
+                "IMBALANCE",
                 "TREATMENT_PREDICTED_BY_CONTROLS",
                 "NOT_EVALUATED"
               ]
@@ -717,11 +748,19 @@
                 "minimum": 0
               }
             },
+            "n_population": {"type": "integer", "minimum": 0},
+            "balance_bound": {"type": "number", "minimum": 0, "maximum": 0.1},
             "propensity_range": {
               "type": "array",
               "items": {
                 "type": "number"
               },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "propensity_bounds": {
+              "type": "array",
+              "items": {"type": "number", "minimum": 0.05, "maximum": 0.95},
               "minItems": 2,
               "maxItems": 2
             },
@@ -842,12 +881,38 @@
               "dag",
               "adjustment",
               "assumptions_declared",
+              "assumptions_evidence",
+              "assumptions_unverified",
+              "population",
               "estimator",
               "support",
               "placebo",
               "estimate"
             ],
             "properties": {
+              "assumptions_declared": {
+                "required": [
+                  "CONSISTENCY",
+                  "NO_INTERFERENCE_BETWEEN_EPISODES",
+                  "CAUSAL_SUFFICIENCY_OF_DECLARED_DAG",
+                  "TEMPORAL_ORDER_W_BEFORE_A_BEFORE_Y"
+                ],
+                "properties": {
+                  "CONSISTENCY": {"const": true},
+                  "NO_INTERFERENCE_BETWEEN_EPISODES": {"const": true},
+                  "CAUSAL_SUFFICIENCY_OF_DECLARED_DAG": {"const": true},
+                  "TEMPORAL_ORDER_W_BEFORE_A_BEFORE_Y": {"const": true}
+                }
+              },
+              "assumptions_evidence": {
+                "required": [
+                  "CONSISTENCY",
+                  "NO_INTERFERENCE_BETWEEN_EPISODES",
+                  "CAUSAL_SUFFICIENCY_OF_DECLARED_DAG",
+                  "TEMPORAL_ORDER_W_BEFORE_A_BEFORE_Y"
+                ]
+              },
+              "assumptions_unverified": {"maxItems": 0},
               "adjustment": {
                 "type": "array"
               },
@@ -855,6 +920,10 @@
                 "properties": {
                   "state": {
                     "const": "SUPPORTED"
+                  },
+                  "balance_max_smd": {"maximum": 0.1},
+                  "propensity_range": {
+                    "items": {"minimum": 0.05, "maximum": 0.95}
                   }
                 }
               },

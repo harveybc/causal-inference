@@ -10,6 +10,7 @@ Synthetic, seeded, numpy/pandas only, CPU. Numbers are arbitrary and never compa
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -23,6 +24,8 @@ from causal_inference_provider import ps3c_graph as graph
 SEED = 1729
 DAG = {"nodes": ["W", "A", "M", "Y"], "edges": [["W", "A"], ["W", "Y"], ["A", "M"], ["M", "Y"], ["A", "Y"], ["W", "M"]]}
 NODE_COLUMNS = {"W": ["W1", "W2"]}
+SYNTHETIC_ASSUMPTIONS = {name: True for name in ps3c.REQUIRED_ASSUMPTIONS}
+SYNTHETIC_ASSUMPTION_EVIDENCE = {name: "planted SCM fixture" for name in ps3c.REQUIRED_ASSUMPTIONS}
 
 
 def continuous_world(n=800, seed=SEED):
@@ -95,16 +98,17 @@ def test_rung1_too_few_events_and_zero_variance_are_states_not_zero():
 # ----------------------------------------------------------------------------------------------- rung 2
 
 
-def test_rung2_continuous_recovers_total_effect_only_with_valid_adjustment():
+def test_rung2_continuous_with_imbalance_fails_closed_even_in_planted_world():
     df = continuous_world()
     naive = np.polyfit(df["A"], df["Y"], 1)[0]
     assert abs(naive - 0.55) > 0.2  # the planted world is confounded
     out = ps3c.rung2_effect(df, treatment="A", outcome="Y", adjustment=["W"], contrast=(1.0, 0.0), dag=DAG,
-                            node_columns=NODE_COLUMNS, placebo_outcomes=["Ypre"], time_key="decision_time")
-    assert out["state"] == ps3c.IDENTIFIED, out["reasons"]
-    assert abs(out["estimate"]["value"] - 0.55) < 0.06
-    lo, hi = out["estimate"]["interval"]
-    assert lo < 0.55 < hi
+                            node_columns=NODE_COLUMNS, placebo_outcomes=["Ypre"], time_key="decision_time",
+                            assumptions=SYNTHETIC_ASSUMPTIONS,
+                            assumption_evidence=SYNTHETIC_ASSUMPTION_EVIDENCE)
+    assert out["state"] == ps3c.NOT_IDENTIFIED, out["reasons"]
+    assert out["estimate"] is None and "IMBALANCE" in out["reasons"]
+    assert out["diagnostics"]["estimate_withheld"] is True
     assert out["excluded_from_adjustment"] == ["M"]
     assert out["placebo"]["state"] == "PASSED"
     assert out["sensitivity"]["robustness_value_q1"] > 0
@@ -118,7 +122,9 @@ def test_rung2_binary_aipw_recovers_ate_where_filtering_fails():
     filtered = df.loc[df.A == 1, "Y"].mean() - df.loc[df.A == 0, "Y"].mean()
     assert abs(filtered - 1.0) > 0.5
     out = ps3c.rung2_effect(df, treatment="A", outcome="Y", adjustment=["W"], contrast=(1, 0), dag=BDAG,
-                            placebo_outcomes=["Ypre"], modifiers=["W"], time_key="decision_time")
+                            placebo_outcomes=["Ypre"], modifiers=["W"], time_key="decision_time",
+                            assumptions=SYNTHETIC_ASSUMPTIONS,
+                            assumption_evidence=SYNTHETIC_ASSUMPTION_EVIDENCE)
     assert out["state"] == ps3c.IDENTIFIED, out["reasons"]
     assert abs(out["estimate"]["value"] - 1.0) < 0.15
     assert abs(out["sensitivity"]["att_aipw"] - 1.0) < 0.2
@@ -162,7 +168,8 @@ def test_rung2_undeclared_assumption_keeps_not_identified():
     df = continuous_world()
     out = ps3c.rung2_effect(df, treatment="A", outcome="Y", adjustment=["W"], contrast=(1.0, 0.0), dag=DAG,
                             node_columns=NODE_COLUMNS, assumptions={"CONSISTENCY": True})
-    assert out["state"] == ps3c.NOT_IDENTIFIED and "ASSUMPTIONS_NOT_DECLARED_TRUE" in out["reasons"]
+    assert out["state"] == ps3c.NOT_IDENTIFIED
+    assert all(f"ASSUMPTION_NOT_EVIDENCED_{name}" in out["reasons"] for name in ps3c.REQUIRED_ASSUMPTIONS)
 
 
 # ----------------------------------------------------------------------------------------------- rung 3
@@ -171,9 +178,12 @@ def test_rung2_undeclared_assumption_keeps_not_identified():
 def test_rung3_population_counterfactual_matches_planted_truth():
     df = continuous_world()
     r2 = ps3c.rung2_effect(df, treatment="A", outcome="Y", adjustment=["W"], contrast=(1.0, 0.0), dag=DAG,
-                           node_columns=NODE_COLUMNS, placebo_outcomes=["Ypre"], time_key="decision_time")
+                           node_columns=NODE_COLUMNS, placebo_outcomes=["Ypre"], time_key="decision_time",
+                           assumptions=SYNTHETIC_ASSUMPTIONS,
+                           assumption_evidence=SYNTHETIC_ASSUMPTION_EVIDENCE)
+    # Unit-test the rung-3 SCM calculation itself; this synthetic world does not pass rung-2 gates.
     block, rows = ps3c.rung3_population(df, treatment="A", outcome="Y", adjustment_cols=["W1", "W2"], a0=0.0,
-                                        rung2_state=r2["state"], mediators=["M"], placebo_outcome="Ypre",
+                                        rung2_state=ps3c.IDENTIFIED, mediators=["M"], placebo_outcome="Ypre",
                                         time_key="decision_time")
     assert block["state"] == ps3c.CF_STATE, block["reasons"]
     assert block["label"] == ps3c.CF_LABEL
@@ -248,12 +258,21 @@ def _dossier(r1, r2, r3, state="CONTRACTED"):
 def test_dossier_validates_and_never_turns_not_identified_into_rejection():
     df = continuous_world()
     r2 = ps3c.rung2_effect(df, treatment="A", outcome="Y", adjustment=["W"], contrast=(1.0, 0.0), dag=DAG,
-                           node_columns=NODE_COLUMNS, placebo_outcomes=["Ypre"], time_key="decision_time")
+                           node_columns=NODE_COLUMNS, placebo_outcomes=["Ypre"], time_key="decision_time",
+                           assumptions=SYNTHETIC_ASSUMPTIONS,
+                           assumption_evidence=SYNTHETIC_ASSUMPTION_EVIDENCE)
     r3, _ = ps3c.rung3_population(df, treatment="A", outcome="Y", adjustment_cols=["W1", "W2"], a0=0.0,
                                   rung2_state=r2["state"], mediators=["M"], placebo_outcome="Ypre")
     doc = _dossier(r2["rung1"], r2, r3)
     assert ps3c.validate_dossier(doc) == []
-    assert doc["selection"]["causal_evidence_level"] == "COUNTERFACTUAL_SENSITIVITY" and doc["selection"]["cf_eligible"]
+    assert doc["selection"]["causal_evidence_level"] == "ASSOCIATION" and not doc["selection"]["cf_eligible"]
+    invalid_identified = json.loads(json.dumps(doc))
+    r2_bad = invalid_identified["rung2"]
+    r2_bad.update(state=ps3c.IDENTIFIED, reasons=[], assumptions_declared=SYNTHETIC_ASSUMPTIONS,
+                  assumptions_evidence=SYNTHETIC_ASSUMPTION_EVIDENCE, assumptions_unverified=[],
+                  estimate={"value": 0.5}, estimator={"name": "synthetic", "library": "numpy", "version": "1"})
+    r2_bad["support"].update(state="SUPPORTED", balance_max_smd=0.10001)
+    assert any("balance_max_smd" in error for error in ps3c.validate_dossier(invalid_identified))
     ni = ps3c.rung2_effect(df, treatment="A", outcome="Y", adjustment=None, contrast=(1.0, 0.0), dag=DAG)
     doc2 = _dossier(ni["rung1"], ni, None)
     assert ps3c.validate_dossier(doc2) == []

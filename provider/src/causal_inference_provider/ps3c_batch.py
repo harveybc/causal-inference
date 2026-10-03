@@ -44,7 +44,6 @@ TARGETS = ([(f"Y_s_{h}h", "Y_s", "short", 60 * h) for h in (1, 2, 3, 4, 5, 6)]
            + [("Y_b_s6", "Y_b", "barrier", 360), ("Y_b_l144", "Y_b", "barrier", 8640)])
 DAG = {"nodes": ["W", "A", "M", "Y"],
        "edges": [["W", "A"], ["W", "Y"], ["W", "M"], ["A", "M"], ["M", "Y"], ["A", "Y"]]}
-ASSUMPTIONS = {k: True for k in ps3c.REQUIRED_ASSUMPTIONS}
 GROUPS = ("USD", "EUR")
 HOUR = pd.Timedelta(hours=1)
 
@@ -325,7 +324,7 @@ def run_cell(ep, *, target, mediator, w_cols, context, pseudo=None, seed=1729, k
     cols_needed = ["A", target, *w_cols]
     r2 = ps3c.rung2_effect(ep, treatment="A", outcome=target, adjustment=["W"], contrast=(1.0, 0.0), dag=DAG,
                            node_columns={"W": w_cols}, treatment_node="A", outcome_node="Y", context=context,
-                           assumptions=ASSUMPTIONS, placebo_outcomes=[c for c in ep.columns if c.startswith("Ypre_")],
+                           placebo_outcomes=[c for c in ep.columns if c.startswith("Ypre_")],
                            placebo_episodes=pseudo, time_key="decision_time", treatment_kind=kind, seed=seed,
                            support={"min_episodes_per_side": 20})
     meds = [mediator] if mediator and mediator != target and mediator in ep else []
@@ -504,7 +503,7 @@ def main(argv=None):
             data_manifest={"sources": extra["sources"], "asset_appearance": slot,
                            "publication_clock": manifest_extra["publication_clock"],
                            "consensus_clock": manifest_extra["consensus_clock"],
-                           "expectation_kind": manifest_extra["expectation_kind"],
+                           "expectation_kind": manifest_extra.get("expectation_kind", "NONE"),
                            "n_episodes": int(extra["n_episodes"]), "exclusions": extra["exclusions"],
                            "train_folds": [f["name"] for f in folds_doc["folds"]]},
             treatment=treatment, rung1=r1, rung2=r2c, rung3=r3,
@@ -566,7 +565,7 @@ def main(argv=None):
                      "exclusions": {}, "limitations": lim}
             mx = {"publication_clock": "ASSUMED_SCHEDULED_PUBLICATION" if archive else "OBSERVED_PUBLICATION_CLOCK",
                   "consensus_clock": "ASSUMED_BEFORE_RELEASE" if archive else "NONE",
-                  "expectation_kind": "PUBLISHED_CONSENSUS" if archive else "NONE"}
+                  **({"expectation_kind": "PUBLISHED_CONSENSUS"} if archive else {})}
             doc = emit(fid, "feature", name, family, head, minutes, r1, r2, r3, treat, mx, extra)
             pc = next((e for e in r1.get("evidence", []) if e["measure"] == "partial_corr_given_H" and e["regime"] is None), None)
             oof = next((e["value"] for e in r1.get("evidence", []) if e["measure"].startswith("oof_relative")), None)
@@ -585,6 +584,13 @@ def main(argv=None):
                           "r2_placebo": (r2.get("placebo") or {}).get("state"),
                           "r2_estimate": (r2.get("estimate") or {}).get("value"),
                           "r2_interval": json.dumps((r2.get("estimate") or {}).get("interval")),
+                          "r2_population_n": (r2.get("population") or {}).get("population_n"),
+                          "r2_population_sha256": (r2.get("population") or {}).get("population_sha256"),
+                          "r2_estimand_id": (r2.get("population") or {}).get("estimand_id"),
+                          "r2_treatment_kind": (r2.get("diagnostics") or {}).get("treatment_kind"),
+                          "r2_assumptions_declared": json.dumps(r2.get("assumptions_declared", {}), sort_keys=True),
+                          "r2_assumptions_unverified": json.dumps(r2.get("assumptions_unverified", [])),
+                          "r2_assumptions_evidence": json.dumps(r2.get("assumptions_evidence", {}), sort_keys=True),
                           "r2_rv_q1": (r2.get("sensitivity") or {}).get("robustness_value_q1"),
                           "r3_delta": ((r3.get("prediction") or {}).get("delta")),
                           "r3_analog": (r3.get("sensitivity") or {}).get("analog_state"),
@@ -668,6 +674,13 @@ def main(argv=None):
                           "r2_placebo": (r2.get("placebo") or {}).get("state"),
                           "r2_estimate": (r2.get("estimate") or {}).get("value"),
                           "r2_interval": json.dumps((r2.get("estimate") or {}).get("interval"))})
+            cells[-1].update(r2_population_n=(r2.get("population") or {}).get("population_n"),
+                             r2_population_sha256=(r2.get("population") or {}).get("population_sha256"),
+                             r2_estimand_id=(r2.get("population") or {}).get("estimand_id"),
+                             r2_treatment_kind=(r2.get("diagnostics") or {}).get("treatment_kind"),
+                             r2_assumptions_declared=json.dumps(r2.get("assumptions_declared", {}), sort_keys=True),
+                             r2_assumptions_unverified=json.dumps(r2.get("assumptions_unverified", [])),
+                             r2_assumptions_evidence=json.dumps(r2.get("assumptions_evidence", {}), sort_keys=True))
             pvals.append(pc["p"] if pc else None)
             card = candidate_card(
                 question=(f"How would {name} have responded had the published {key} surprise been +1 TRAIN-scale unit "
@@ -741,6 +754,9 @@ def main(argv=None):
         "per_rung_counts": {r: dict(Counter(c[r] for c in cells)) for r in ("rung1", "rung2", "rung3")},
         "per_rung_raw_counts": {r: dict(Counter(c[f"{r}_raw"] for c in cells)) for r in ("rung1", "rung2", "rung3")},
         "subject_names_per_state": names,
+        "multiplicity": {"rung1_scope": "BATCH_LOCAL", "rung1_global_campaign_adjustment": "NOT_APPLIED",
+                         "rung1_family": "all valid rung-1 p-values in this batch",
+                         "rung2_review_scope": "BATCH_LOCAL; global campaign adjustment is not computed here"},
         "summary_state_rule": {"rung1": "ESTIMATED = association measured (ASSOCIATION_REPORTED; never causal); "
                                         "robust_association additionally needs batch BH q<=0.05 on the partial "
                                         "correlation given H AND mean OOF MSE gain > 0",
