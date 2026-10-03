@@ -1,0 +1,1324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/harveybc/predictor/docs/contracts/causal_dossier.v1.schema.json",
+  "title": "Causal dossier per episode or episode population (PS3-C, subplan section 5)",
+  "description": "One document per (subject, head, horizon). The three rungs carry SEPARATE states; NOT_EVALUATED and NOT_IDENTIFIED are states, never zero. Consumers (Calendar, M5PHET, selection) read this contract, never the causal-inference internals. Produced by causal-inference; the source of every number is a pinned artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "dossier_id",
+    "produced_at",
+    "producer",
+    "subject",
+    "data_manifest",
+    "treatment",
+    "rung1",
+    "rung2",
+    "rung3",
+    "emission",
+    "selection",
+    "limitations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "causal_dossier.v1"
+    },
+    "dossier_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "revision",
+        "module"
+      ],
+      "properties": {
+        "repository": {
+          "const": "causal-inference"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$"
+        },
+        "module": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "event_type",
+        "asset",
+        "head",
+        "target",
+        "horizon_minutes"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "EPISODE",
+            "EPISODE_POPULATION"
+          ]
+        },
+        "episode_id": {
+          "type": "string"
+        },
+        "population": {
+          "type": "string",
+          "description": "declared population rule when kind is EPISODE_POPULATION"
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "economy | release, as the event rows name it"
+        },
+        "asset": {
+          "type": "string",
+          "minLength": 1
+        },
+        "head": {
+          "enum": [
+            "short",
+            "long",
+            "barrier",
+            "policy"
+          ]
+        },
+        "target": {
+          "enum": [
+            "Y_s",
+            "Y_l",
+            "Y_b",
+            "J_policy"
+          ]
+        },
+        "horizon_minutes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "EPISODE"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "episode_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "EPISODE_POPULATION"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "population"
+            ]
+          }
+        }
+      ]
+    },
+    "data_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "asset_appearance",
+        "publication_clock",
+        "expectation_kind",
+        "n_episodes",
+        "exclusions",
+        "train_folds"
+      ],
+      "properties": {
+        "asset_appearance": {
+          "description": "The single slot through which every rung reads the outcome price series (owner open question 13). CONTRACTED binds the study to one contracted census appearance (lane B FINANCIAL_TRAIN_CONTRACTS.v1: appearance id, resource sha256, TRAIN rows, contract id) without redesign; NOT_EXECUTABLE_NO_CONTRACTED_PRICE is the state until such an appearance is sealed through the governed route. No uncontracted price file may stand in.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "appearance_id",
+                "dataset_id",
+                "entity",
+                "resource_sha256",
+                "contract_id",
+                "contract_sha256",
+                "train_rows",
+                "frequency",
+                "period",
+                "contracts_document_sha256"
+              ],
+              "properties": {
+                "state": {
+                  "const": "CONTRACTED"
+                },
+                "appearance_id": {
+                  "type": "string",
+                  "pattern": "^app_[0-9a-f]{24}$"
+                },
+                "dataset_id": {
+                  "type": "string",
+                  "pattern": "^financial_data\\.census_appearance\\.app_[0-9a-f]{24}$"
+                },
+                "entity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resource_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "physical_sha256 of the appearance bytes"
+                },
+                "contract_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "the TRAIN contract's id as the contracts document names it"
+                },
+                "contract_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "train_rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[start, end) row boundaries of the TRAIN partition; every rung fits inside them only"
+                },
+                "frequency": {
+                  "enum": [
+                    "5m",
+                    "15m",
+                    "1h",
+                    "4h",
+                    "1d"
+                  ]
+                },
+                "period": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "contracts_document_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "digest of the FINANCIAL_TRAIN_CONTRACTS document the ids were read from"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "entity",
+                "reason"
+              ],
+              "properties": {
+                "state": {
+                  "const": "NOT_EXECUTABLE_NO_CONTRACTED_PRICE"
+                },
+                "entity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "open_question": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "LOCAL EXTENSION (causal-inference lane C, 2026-10-03; not in the upstream predictor schema): the outcome price series bound through the lane-A EURUSD business contract of the canonical selection-first plan, not a C127 census appearance.",
+              "required": [
+                "state",
+                "entity",
+                "contract_schema",
+                "contract_sha256",
+                "resource",
+                "resource_sha256",
+                "train_period",
+                "frequency",
+                "lane_a_digests_sha256"
+              ],
+              "properties": {
+                "state": {
+                  "const": "CONTRACTED_BUSINESS_CONTRACT"
+                },
+                "entity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contract_schema": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contract_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "resource": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resource_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "train_period": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "frequency": {
+                  "enum": [
+                    "5m",
+                    "15m",
+                    "1h",
+                    "4h",
+                    "1d"
+                  ]
+                },
+                "lane_a_digests_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "resource",
+              "sha256",
+              "rows"
+            ],
+            "properties": {
+              "role": {
+                "enum": [
+                  "calendar",
+                  "bars",
+                  "covariates",
+                  "event_rows",
+                  "projections"
+                ]
+              },
+              "resource": {
+                "type": "string",
+                "minLength": 1,
+                "description": "a governed resource id or a repository-relative path; never a host name"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "governed": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "publication_clock": {
+          "enum": [
+            "OBSERVED_PUBLICATION_CLOCK",
+            "OBSERVED_ACTUAL_PUBLICATION",
+            "ASSUMED_SCHEDULED_PUBLICATION"
+          ]
+        },
+        "consensus_clock": {
+          "enum": [
+            "OBSERVED",
+            "ASSUMED_BEFORE_RELEASE",
+            "NONE"
+          ]
+        },
+        "expectation_kind": {
+          "enum": [
+            "PUBLISHED_CONSENSUS",
+            "MODEL_BASED_EXPECTATION",
+            "NONE"
+          ]
+        },
+        "n_episodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exclusions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "refusal code -> count, e.g. BARS_MISSING_AT_HORIZON"
+        },
+        "train_folds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "treatment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "definition",
+        "kind",
+        "standardization",
+        "dose_support"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "definition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "CONTINUOUS",
+            "BINARY",
+            "INTERVAL",
+            "VECTOR"
+          ]
+        },
+        "standardization": {
+          "type": "string",
+          "minLength": 1,
+          "description": "scale rule, e.g. dispersion of surprises published strictly before the release"
+        },
+        "dose_support": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max",
+            "n"
+          ],
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            },
+            "n": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "quantiles": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "sequential_treatment_policy": {
+          "enum": [
+            "SEPARATED_EPISODES_ONLY",
+            "TIME_VARYING_ESTIMATOR",
+            "NOT_APPLICABLE"
+          ]
+        }
+      }
+    },
+    "rung1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "NOT_EVALUATED",
+            "ASSOCIATION_REPORTED",
+            "TOO_FEW_EVENTS",
+            "ZERO_VARIANCE"
+          ]
+        },
+        "estimators": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "effective_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conditioning_set": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "multiplicity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "family": {
+              "type": "string"
+            },
+            "n_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "permutations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "p_floor": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "correction": {
+              "type": "string"
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "measure",
+              "value",
+              "n"
+            ],
+            "properties": {
+              "measure": {
+                "type": "string"
+              },
+              "value": {
+                "type": "number"
+              },
+              "n": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "p": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "q": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "regime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signed_direction_stable": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "rung2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reasons",
+        "estimand"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "NOT_EVALUATED",
+            "NOT_IDENTIFIED",
+            "IDENTIFIED_CONDITIONAL_ON_DECLARED_ASSUMPTIONS"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]+"
+          }
+        },
+        "estimand": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contrast": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "dag": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "nodes",
+            "edges"
+          ],
+          "properties": {
+            "nodes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2
+            },
+            "edges": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        "adjustment": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "excluded_from_adjustment": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "mediators, colliders and descendants named so a reader can attack the choice"
+        },
+        "assumptions_declared": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "estimator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "library",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "library": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          }
+        },
+        "support": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "SUPPORTED",
+                "NO_COMMON_SUPPORT",
+                "OVERLAP_SCREEN_FAILED",
+                "TREATMENT_PREDICTED_BY_CONTROLS",
+                "NOT_EVALUATED"
+              ]
+            },
+            "n_per_side": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "propensity_range": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "residual_variance_share": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "balance_max_smd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "effective_sample_size": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "placebo": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "PASSED",
+                "FAILED",
+                "NOT_RUN",
+                "TESTED_NOTHING"
+              ]
+            },
+            "tests": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "verdict"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "sensitivity": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "string",
+              "null"
+            ]
+          }
+        },
+        "estimate": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "value",
+            "interval",
+            "unit",
+            "uncertainty"
+          ],
+          "properties": {
+            "value": {
+              "type": "number"
+            },
+            "interval": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "unit": {
+              "type": "string"
+            },
+            "uncertainty": {
+              "type": "string"
+            },
+            "heterogeneity": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "IDENTIFIED_CONDITIONAL_ON_DECLARED_ASSUMPTIONS"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "dag",
+              "adjustment",
+              "assumptions_declared",
+              "estimator",
+              "support",
+              "placebo",
+              "estimate"
+            ],
+            "properties": {
+              "adjustment": {
+                "type": "array"
+              },
+              "support": {
+                "properties": {
+                  "state": {
+                    "const": "SUPPORTED"
+                  }
+                }
+              },
+              "placebo": {
+                "properties": {
+                  "state": {
+                    "const": "PASSED"
+                  }
+                }
+              },
+              "estimate": {
+                "type": "object"
+              },
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_IDENTIFIED",
+                  "NOT_EVALUATED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "estimate": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_IDENTIFIED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rung3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "label"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "NOT_EVALUATED",
+            "NOT_IDENTIFIED",
+            "COUNTERFACTUAL_UNDER_DECLARED_SCM"
+          ]
+        },
+        "label": {
+          "enum": [
+            "NONE",
+            "MODEL_BASED_COUNTERFACTUAL",
+            "SAME_EPISODE_COUNTERFACTUAL_UNDER_DECLARED_SCM"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "order",
+            "equations",
+            "noise",
+            "invertible",
+            "fit_digest"
+          ],
+          "properties": {
+            "order": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2
+            },
+            "equations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "noise": {
+              "enum": [
+                "ADDITIVE",
+                "POSTERIOR_INFERRED"
+              ]
+            },
+            "invertible": {
+              "type": "boolean"
+            },
+            "fit_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "library": {
+              "type": "string"
+            },
+            "alternatives_considered": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "abduction": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "object"
+            ]
+          }
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "prediction": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "factual": {
+              "type": "number"
+            },
+            "counterfactual": {
+              "type": "number"
+            },
+            "delta": {
+              "type": "number"
+            },
+            "model_based": {
+              "type": "number",
+              "description": "f(a0, w) without u_e, reported beside so the two are never confused"
+            },
+            "propagated_nodes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "barrier_reread": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "uncertainty": {
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          }
+        },
+        "sensitivity": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "string",
+              "null",
+              "array"
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "COUNTERFACTUAL_UNDER_DECLARED_SCM"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "scm",
+              "abduction",
+              "action",
+              "prediction"
+            ],
+            "properties": {
+              "label": {
+                "const": "SAME_EPISODE_COUNTERFACTUAL_UNDER_DECLARED_SCM"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "label": {
+                "const": "MODEL_BASED_COUNTERFACTUAL"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_IDENTIFIED",
+                  "NOT_EVALUATED"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "emission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operational_use",
+        "emittable_from"
+      ],
+      "properties": {
+        "operational_use": {
+          "enum": [
+            "RETROSPECTIVE_ONLY",
+            "OPERATIONAL_PREDICTIVE_ONLY",
+            "BOTH_DECLARED"
+          ]
+        },
+        "emittable_from": {
+          "type": "object",
+          "description": "quantity -> earliest instant (date-time) it may be joined to an operational row; a quantity abducted from a realized outcome is emittable only after that outcome",
+          "additionalProperties": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "causal_evidence_level",
+        "cf_eligible"
+      ],
+      "properties": {
+        "causal_evidence_level": {
+          "enum": [
+            "NONE",
+            "ASSOCIATION",
+            "IDENTIFIED_EFFECT",
+            "COUNTERFACTUAL_SENSITIVITY"
+          ]
+        },
+        "cf_eligible": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "cf_eligible": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "causal_evidence_level": {
+                "const": "COUNTERFACTUAL_SENSITIVITY"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "data_manifest": {
+            "properties": {
+              "asset_appearance": {
+                "properties": {
+                  "state": {
+                    "const": "NOT_EXECUTABLE_NO_CONTRACTED_PRICE"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rung1": {
+            "properties": {
+              "state": {
+                "const": "NOT_EVALUATED"
+              }
+            }
+          },
+          "rung2": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          },
+          "rung3": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          },
+          "selection": {
+            "properties": {
+              "causal_evidence_level": {
+                "const": "NONE"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "data_manifest": {
+            "properties": {
+              "publication_clock": {
+                "const": "ASSUMED_SCHEDULED_PUBLICATION"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rung2": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          },
+          "rung3": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "data_manifest": {
+            "properties": {
+              "expectation_kind": {
+                "const": "MODEL_BASED_EXPECTATION"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rung2": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rung2": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rung3": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "NOT_EVALUATED",
+                  "NOT_IDENTIFIED"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

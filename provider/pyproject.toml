@@ -27,5 +27,8 @@ causal_inference = "causal_inference_provider.chat:M5PHETCausalProvider"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+causal_inference_provider = ["contracts/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
