@@ -57,7 +57,7 @@ def make_lane_a_batch(root, n_hours=24 * 900, seed=5):
               open(os.path.join(root, "contract.json"), "w"))
     feats = [{"feature_id": c, "family": c.split(".")[0], "source": "synthetic", "role": "feature",
               "admissibility": "ADMISSIBLE"} for c in X.columns if "." in c]
-    json.dump({"features": feats}, open(os.path.join(root, "admissible_features.json"), "w"))
+    json.dump({"batch": os.path.basename(root), "features": feats}, open(os.path.join(root, "admissible_features.json"), "w"))
     arts = {n_: _sha(os.path.join(root, n_)) for n_ in os.listdir(root)}
     json.dump({"artifacts_sha256": arts, "inputs_sha256": {"eurusd_5m.parquet": "b" * 64}, "code_commit": "synthetic"},
               open(os.path.join(root, "digests.json"), "w"))
@@ -147,3 +147,45 @@ def test_controls_are_not_selected_on_a_future_crossing():
     # rows in the 24h BEFORE the crossing remain eligible controls; rows within 24h AFTER it are excluded
     assert ((ctrl_times < cross_t) & (ctrl_times >= cross_t - pd.Timedelta(hours=24))).any()
     assert not ((ctrl_times > cross_t) & (ctrl_times < cross_t + pd.Timedelta(hours=24))).any()
+
+
+def test_extension_batch_and_role_overlay(tmp_path):
+    base = make_lane_a_batch(str(tmp_path / "b1"), n_hours=24 * 500)
+    X = pd.read_parquet(os.path.join(base, "features_train.parquet"))
+    ext = str(tmp_path / "b2")
+    os.makedirs(ext)
+    rng = np.random.default_rng(9)
+    Xn = X[["t_decision_utc", "row_id"]].copy()
+    Xn["fred.vix.level"] = pd.Series(rng.normal(size=len(X))).rolling(48, min_periods=1).mean()
+    Xn["fx.gbpusd.logret_1h"] = rng.normal(scale=1e-3, size=len(X))
+    Xn.to_parquet(os.path.join(ext, "features_train.parquet"), index=False)
+    feats = [{"feature_id": "fred.vix.level", "role": "feature", "admissibility": "ADMISSIBLE",
+              "availability_time": "(D+2) 00:00 UTC", "source": "synthetic"},
+             {"feature_id": "fx.gbpusd.logret_1h", "role": "feature", "admissibility": "ADMISSIBLE",
+              "availability_time": "bar end", "source": "synthetic"}]
+    json.dump({"batch": "b2", "features": feats}, open(os.path.join(ext, "admissible_features.json"), "w"))
+    arts = {n_: _sha(os.path.join(ext, n_)) for n_ in os.listdir(ext)}
+    json.dump({"artifacts_sha256": arts, "inputs_sha256": {}, "base_batch_digests_sha256": _sha(os.path.join(base, "digests.json"))},
+              open(os.path.join(ext, "digests.json"), "w"))
+    open(os.path.join(ext, "READY"), "w").write(json.dumps({"digests_sha256": _sha(os.path.join(ext, "digests.json"))}))
+    out = str(tmp_path / "o2")
+    ps3c_batch.main(["--lane-a-batch", ext, "--base-batch", base, "--inputs", str(tmp_path), "--lane-a-code", "x",
+                     "--out", out, "--batch", "b2", "--revision", "0123456", "--skip-events", "--permutations", "30"])
+    summ = pd.read_csv(os.path.join(out, "summary.csv"))
+    assert set(summ.subject) == {"fred.vix.level", "fx.gbpusd.logret_1h"}
+    vix = summ[summ.subject == "fred.vix.level"]
+    assert vix.r2_reasons.str.contains("ASSUMED_PUBLICATION_CLOCK").all()  # declared lag is not an observed clock
+    assert (vix.rung2 != "ESTIMATED").all()
+    rep = json.load(open(os.path.join(out, "batch_report.json")))
+    assert rep["schema_validation"]["with_errors"] == 0 and rep["base_batch"] == "b1"
+    # role overlay: a selector episode source is not a feature candidate
+    ov = str(tmp_path / "overlay.json")
+    json.dump({"applies_to_batch": "b1", "selector_episode_source_features": ["ta.osc"]}, open(ov, "w"))
+    out1 = str(tmp_path / "o1")
+    ps3c_batch.main(["--lane-a-batch", base, "--inputs", str(tmp_path), "--lane-a-code", "x", "--out", out1,
+                     "--batch", "b1", "--revision", "0123456", "--only-features", "ta.osc,px.logret_1h",
+                     "--role-overlay", ov, "--permutations", "30"])
+    s1 = pd.read_csv(os.path.join(out1, "summary.csv"))
+    assert set(s1.subject) == {"px.logret_1h"}
+    r1 = json.load(open(os.path.join(out1, "batch_report.json")))
+    assert r1["selector_episode_sources_not_feature_candidates"]["features"] == ["ta.osc"]

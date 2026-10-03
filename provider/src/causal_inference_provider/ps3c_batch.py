@@ -74,20 +74,46 @@ def slug(s):
 # --------------------------------------------------------------------------------------------- inputs
 
 
-def verify_batch(bdir):
+def verify_batch(bdir, required=("features_train.parquet", "targets_train.parquet", "folds.json", "contract.json",
+                                  "admissible_features.json")):
     ready = json.loads(open(os.path.join(bdir, "READY")).read())
     dig_path = os.path.join(bdir, "digests.json")
     if sha(dig_path) != ready["digests_sha256"]:
         raise SystemExit("REFUSED: digests.json does not match READY")
     dig = json.load(open(dig_path))
     checked = {}
-    for name in ("features_train.parquet", "targets_train.parquet", "folds.json", "contract.json",
-                 "admissible_features.json"):
+    for name in required:
         got = sha(os.path.join(bdir, name))
         if dig["artifacts_sha256"].get(name) != got:
             raise SystemExit(f"REFUSED: {name} digest mismatch")
         checked[name] = got
     return ready, dig, checked
+
+
+def load_extension_batch(bdir, base_dir, X_base):
+    """A later lane-A batch carries only new features on the same decision rows as its base batch."""
+    ready, dig, checked = verify_batch(bdir, required=("features_train.parquet", "admissible_features.json"))
+    if dig.get("base_batch_digests_sha256") != sha(os.path.join(base_dir, "digests.json")):
+        raise SystemExit("REFUSED: extension batch is not bound to this base batch")
+    Xn = pd.read_parquet(os.path.join(bdir, "features_train.parquet"))
+    Xn["t_decision_utc"] = pd.to_datetime(Xn["t_decision_utc"], utc=True)
+    if len(Xn) != len(X_base) or not (Xn["row_id"].to_numpy() == X_base["row_id"].to_numpy()).all() or not (
+            Xn["t_decision_utc"].to_numpy() == X_base["t_decision_utc"].to_numpy()).all():
+        raise SystemExit("REFUSED: extension batch rows differ from the base batch")
+    meta = json.load(open(os.path.join(bdir, "admissible_features.json")))["features"]
+    keep = [c for c in [*H_BASE, *PLACEBO_PRE] if c in X_base and c not in Xn]
+    X = pd.concat([Xn, X_base[keep]], axis=1)
+    return ready, dig, checked, X, meta
+
+
+def clock_of(m):
+    """OBSERVED for bar-end market data; NOT_APPLICABLE for known-in-advance calendar; ASSUMED otherwise."""
+    av = str(m.get("availability_time", "")).strip().lower()
+    if av in ("t (bar end)", "bar end"):
+        return "OBSERVED"
+    if av.startswith("known in advance"):
+        return "KNOWN_IN_ADVANCE"
+    return "ASSUMED"
 
 
 def load_batch(bdir):
@@ -426,6 +452,9 @@ def main(argv=None):
     ap.add_argument("--only-features", default=None, help="comma list (pilot)")
     ap.add_argument("--max-event-types", type=int, default=None, help="pilot limit")
     ap.add_argument("--permutations", type=int, default=200)
+    ap.add_argument("--base-batch", default=None, help="lane-A base batch (targets/folds/contract) for an extension batch")
+    ap.add_argument("--role-overlay", action="append", default=[], help="lane-A role overlay JSON (repeatable)")
+    ap.add_argument("--skip-events", action="store_true")
     a = ap.parse_args(argv)
     t_all = time.time()
     out = a.out
@@ -435,14 +464,31 @@ def main(argv=None):
     os.makedirs(os.path.join(out, "records"), exist_ok=True)
     cost = {}
     t0 = time.time()
-    ready, dig, checked = verify_batch(a.lane_a_batch)
-    X, Y, contract, folds_doc, folds, meta, train_end = load_batch(a.lane_a_batch)
+    if a.base_batch:
+        base_ready, base_dig, base_checked = verify_batch(a.base_batch)
+        Xb, Y, contract, folds_doc, folds, _, train_end = load_batch(a.base_batch)
+        ready, dig, checked, X, meta = load_extension_batch(a.lane_a_batch, a.base_batch, Xb)
+        checked = {**{f"base:{k}": v for k, v in base_checked.items()}, **checked}
+        checked.setdefault("targets_train.parquet", base_checked["targets_train.parquet"])
+        dig = {**dig, "inputs_sha256": {**base_dig.get("inputs_sha256", {}), **dig.get("inputs_sha256", {})}}
+        slot_dig = sha(os.path.join(a.base_batch, "digests.json"))
+    else:
+        ready, dig, checked = verify_batch(a.lane_a_batch)
+        X, Y, contract, folds_doc, folds, meta, train_end = load_batch(a.lane_a_batch)
+        slot_dig = sha(os.path.join(a.lane_a_batch, "digests.json"))
     cost["load_s"] = time.time() - t0
     lane_a_dig = sha(os.path.join(a.lane_a_batch, "digests.json"))
-    slot = asset_slot(contract, dig, lane_a_dig)
+    slot = asset_slot(contract, dig, slot_dig)
+    batch_name = json.load(open(os.path.join(a.lane_a_batch, "admissible_features.json"))).get("batch", "")
+    episode_sources = {}
+    for ov in a.role_overlay:
+        doc = json.load(open(ov))
+        if doc.get("applies_to_batch") in (batch_name, os.path.basename(os.path.normpath(a.lane_a_batch))):
+            for f in doc.get("selector_episode_source_features", []):
+                episode_sources[f] = os.path.basename(ov)
     produced = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
     feats = [m for m in meta if m.get("role") == "feature" and str(m.get("admissibility", "")).startswith("ADMISSIBLE")
-             and m["feature_id"] in X]
+             and m["feature_id"] in X and m["feature_id"] not in episode_sources]
     if a.only_features:
         keep = set(a.only_features.split(","))
         feats = [m for m in feats if m["feature_id"] in keep]
@@ -476,8 +522,9 @@ def main(argv=None):
     for m in feats:
         fid = m["feature_id"]
         hist = [c for c in H_BASE if c in X and c != fid]
-        archive = "economic_calendar_2011_2021" in str(m.get("source", ""))
-        calendar = fid.startswith("cal.")
+        clock = clock_of(m)
+        archive = clock == "ASSUMED"  # declared availability (calendar archive, FRED D+2, Yahoo D+1): clock assumed
+        calendar = clock == "KNOWN_IN_ADVANCE" or fid.startswith("cal.")
         ctx = {"publication_clock": "ASSUMED_SCHEDULED_PUBLICATION"} if archive else {}
         ep, cinfo = (None, {"reason": "KNOWN_IN_ADVANCE_CALENDAR_NOT_AN_OBSERVED_INTERVENTION"}) if calendar else \
             crossing_episodes(X, Y, fid)
@@ -512,7 +559,8 @@ def main(argv=None):
                    "rungs 2-3 use crossing episodes; the crossing is an observed state change, not a market intervention",
                    "linear outcome/propensity models; identification is conditional on the declared DAG and W"]
             if archive:
-                lim.append("archive calendar clock ASSUMED (scheduled+1min): rungs 2-3 cannot be identified")
+                lim.append(f"availability clock ASSUMED ({m.get('availability_time')}), not an observed receipt clock: "
+                           "rungs 2-3 cannot be identified under the dossier contract")
             extra = {"population": f"crossing episodes of {fid}" if ep is not None else f"hourly rows ({fid})",
                      "event_type": f"feature:{fid}", "sources": src, "n_episodes": len(ep) if ep is not None else 0,
                      "exclusions": {}, "limitations": lim}
@@ -559,10 +607,13 @@ def main(argv=None):
 
     # ---------------- economic events -> EURUSD
     t0 = time.time()
-    try:
-        evs, pseudo, einfo = event_episodes(X, Y, a.inputs, a.lane_a_code, train_end)
-    except Exception as trouble:  # recorded, not hidden: the event study is then PENDING
-        evs, pseudo, einfo = {}, {}, {"error": f"{type(trouble).__name__}: {trouble}"}
+    if a.skip_events:
+        evs, pseudo, einfo = {}, {}, {"skipped": "event study belongs to the base batch run"}
+    else:
+        try:
+            evs, pseudo, einfo = event_episodes(X, Y, a.inputs, a.lane_a_code, train_end)
+        except Exception as trouble:  # recorded, not hidden: the event study is then PENDING
+            evs, pseudo, einfo = {}, {}, {"error": f"{type(trouble).__name__}: {trouble}"}
     keys = list(evs)[: a.max_event_types] if a.max_event_types else list(evs)
     for key in keys:
         ep = evs[key]
@@ -675,6 +726,11 @@ def main(argv=None):
         "lane_a": {"batch_dir": os.path.basename(os.path.normpath(a.lane_a_batch)), "ready": ready,
                    "digests_sha256": lane_a_dig, "verified_artifacts": checked, "code_commit": dig.get("code_commit")},
         "train_period": contract["periods"]["train"], "test_read": False,
+        "base_batch": os.path.basename(os.path.normpath(a.base_batch)) if a.base_batch else None,
+        "selector_episode_sources_not_feature_candidates": {"n": len(episode_sources),
+                                                             "covered_by": "economic-event study (episodes)",
+                                                             "overlay": sorted(set(episode_sources.values())),
+                                                             "features": sorted(episode_sources)},
         "denominators": {"features_admissible_in": int(sum(1 for m in meta if str(m.get("admissibility", "")).startswith("ADMISSIBLE"))),
                          "features_role_feature_evaluated": len(feats), "targets": len(TARGETS),
                          "event_types": len(keys), "event_episodes": {k: int(len(evs[k])) for k in keys},
