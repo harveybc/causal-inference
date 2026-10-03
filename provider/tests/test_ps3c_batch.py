@@ -189,3 +189,36 @@ def test_extension_batch_and_role_overlay(tmp_path):
     assert set(s1.subject) == {"px.logret_1h"}
     r1 = json.load(open(os.path.join(out1, "batch_report.json")))
     assert r1["selector_episode_sources_not_feature_candidates"]["features"] == ["ta.osc"]
+
+
+def test_review_joins_every_ps2_candidate_and_controls_multiplicity(tmp_path):
+    from causal_inference_provider import ps3c_review
+
+    lane = make_lane_a_batch(str(tmp_path / "laneA"), n_hours=24 * 600)
+    out = str(tmp_path / "out")
+    ps3c_batch.main(["--lane-a-batch", lane, "--inputs", str(tmp_path), "--lane-a-code", "x", "--out", out,
+                     "--batch", "b", "--revision", "0123456", "--only-features", "ta.osc,px.logret_1h,cal.hour_sin",
+                     "--permutations", "30", "--skip-events"])
+    ps2 = str(tmp_path / "ps2")
+    os.makedirs(ps2)
+    cells = {k: {"status": "PROVISIONAL_SURVIVOR", "reasons": ["S_OOF_UTILITY"]} for k in ps3c_review.CELL_MAP}
+    cands = [{"feature_id": f, "family": "x", "cells": cells} for f in ("ta.osc", "px.logret_1h", "cal.hour_sin", "ghost.f")]
+    json.dump({"batch_id": "b", "candidates": cands, "schema": "ps2_lane_c_candidates.v1"},
+              open(os.path.join(ps2, "ps2_candidates_lane_c.json"), "w"))
+    json.dump({"tier_1": ["ta.osc"], "tier_2": [], "tier_3": ["cal.hour_sin"], "exploration": ["ghost.f"]},
+              open(os.path.join(ps2, "ps2_extractor_priority.json"), "w"))
+    open(os.path.join(ps2, "READY"), "w").write("{}")
+    join = str(tmp_path / "join.json")
+    ps3c_review.main(["--ps3c-batch", out, "--ps2-batch", ps2, "--lane-a-batch", lane, "--out-join", join,
+                      "--revision", "0123456"])
+    rep = json.load(open(join))
+    assert rep["candidates"] == 4 and rep["prioritized"] == 3
+    assert rep["candidates_without_any_dossier"] == ["ghost.f"]  # PENDING, never dropped
+    ghost = [c for c in rep["join"] if c["feature_id"] == "ghost.f"][0]
+    assert all(v["rung2"] == "PENDING" for v in ghost["cells"].values())
+    m = rep["multiplicity"]
+    assert m["bh_significant"] <= m["family_size"] and m["survivors"] <= m["bh_significant"]
+    cal = [c for c in rep["join"] if c["feature_id"] == "cal.hour_sin"][0]
+    assert all(v["rung2"] == "NOT_APPLICABLE" for v in cal["cells"].values())
+    for s in rep["survivors"]:
+        assert s["nonlinear"]["survives"] and s["q_bh_family"] <= 0.05
