@@ -327,7 +327,11 @@ def vol_regime_dummies(vol_prev, train_vol):
     return code, (code == 1).astype(float), (code == 2).astype(float), [float(q1), float(q2)]
 
 
-def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None, band=None, locators=CALENDAR_LOCATORS):
+def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None, band=None,
+                        locators=CALENDAR_LOCATORS, targets=None, history_columns=None,
+                        pre_return_columns=None, mediator_target="Y_s_1h",
+                        volatility_regime_column="px.ewma_vol_168",
+                        placebo_outcome_column="px.logret_24h"):
     """Horizon-aware crossing episodes: decision rows spaced >= max(24, horizon_h) hours so outcome windows are disjoint.
 
     Common support BY CONSTRUCTION: both arms start from the same pre-row band [band, q80) with
@@ -387,11 +391,14 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
                        "W_x_prev": x[pre],
                        "W_x_gap_to_thr_sq": (thr - x[pre]) ** 2,  # crossing propensity is nonlinear in the distance to the threshold
                        "W_x_trend_24": x[pre] - x[np.clip(pre - 24, 0, None)]})
-    for c in [*H_BASE, *PRE_RETURNS]:
+    targets = TARGETS if targets is None else targets
+    history_columns = H_BASE if history_columns is None else history_columns
+    pre_return_columns = PRE_RETURNS if pre_return_columns is None else pre_return_columns
+    for c in [*history_columns, *pre_return_columns]:
         if c in X and c != fid:
             ep[f"W_{c}"] = X[c].to_numpy(float)[pre]
-    if "px.ewma_vol_168" in X:
-        vol = X["px.ewma_vol_168"].to_numpy(float)
+    if volatility_regime_column and volatility_regime_column in X:
+        vol = X[volatility_regime_column].to_numpy(float)
         code, mid, high, cuts = vol_regime_dummies(vol[pre], vol[np.isfinite(vol)])
         ep["W_vol_regime_mid"], ep["W_vol_regime_high"], ep["vol_regime_code"] = mid, high, code
     else:
@@ -399,14 +406,14 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
     for c in locators:
         if c in X and c != fid:
             ep[f"W_{c}"] = X[c].to_numpy(float)[pre]
-    if "px.logret_24h" in X:
+    if placebo_outcome_column and placebo_outcome_column in X:
         j = np.searchsorted(tn, tn[pre] - 144 * H_NS, side="right") - 1
-        far = X["px.logret_24h"].to_numpy(float)[np.clip(j, 0, None)]
+        far = X[placebo_outcome_column].to_numpy(float)[np.clip(j, 0, None)]
         ep["Ypre_distant_24h_ending_t_minus_145h"] = np.where(j >= 0, far, np.nan)
-    for name, *_ in TARGETS:
+    for name, *_ in targets:
         if name in Y:
             ep[name] = Y[name].to_numpy(float)[rows]
-    ep["M_first_hour"] = Y["Y_s_1h"].to_numpy(float)[rows] if "Y_s_1h" in Y else np.nan
+    ep["M_first_hour"] = Y[mediator_target].to_numpy(float)[rows] if mediator_target and mediator_target in Y else np.nan
     disjoint = episode_windows_disjoint(tn[rows], horizon_h)
     info = {"threshold_q": q, "threshold": thr, "band_q": band_q, "band": band, "band_q_value": band_q_value,
             "band_rule": "max(q60, thr - 2*SD_TRAIN(one-step change))", "sd_one_step": sd_step, "treated": len(treated),
@@ -535,8 +542,8 @@ def assign_rung2_state(rec, q, nonlinear, rung1_sign):
 # ------------------------------------------------------------------------------------------------- rung 3
 
 
-def rung3_cell(ep, *, target, r2_state, w_cols, seed=SEED):
-    meds = ["M_first_hour"] if target != "Y_s_1h" and "M_first_hour" in ep else []
+def rung3_cell(ep, *, target, r2_state, w_cols, seed=SEED, mediator_target="Y_s_1h"):
+    meds = ["M_first_hour"] if mediator_target and target != mediator_target and "M_first_hour" in ep else []
     pl = next((c for c in ep.columns if c.startswith("Ypre_")), None)
     r3, rows = ps3c.rung3_population(ep, treatment="A", outcome=target, adjustment_cols=w_cols, a0=0.0,
                                      rung2_state=r2_state, mediators=meds, placebo_outcome=pl,

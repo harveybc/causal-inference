@@ -9,6 +9,9 @@ description = "Explicit, offline causal ATE provider backed by EconML"
 requires-python = ">=3.10,<3.14"
 dependencies = []
 
+[project.scripts]
+feature-selection-column = "causal_inference_provider.feature_selection_worker:main"
+
 [project.optional-dependencies]
 fit = [
     "econml==0.16.0",

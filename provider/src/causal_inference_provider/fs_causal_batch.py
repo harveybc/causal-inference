@@ -136,34 +136,63 @@ def load_extension_columns(inputs, b, X_base, features):
     return pd.concat([Xn, X_base[keep]], axis=1)
 
 
-def _episode_sets(X, Y, fid, clock):
+def _episode_sets(X, Y, fid, clock, targets=None, history_columns=None, pre_return_columns=None,
+                  calendar_locator_columns=None, mediator_target="Y_s_1h",
+                  volatility_regime_column="px.ewma_vol_168", placebo_outcome_column="px.logret_24h"):
     """One episode frame per distinct horizon class (gap >= max(24, h))."""
+    targets = fc.TARGETS if targets is None else targets
     sets = {}
     if clock == "KNOWN_IN_ADVANCE" or fid.startswith("cal."):
         return sets, {"reason": "KNOWN_IN_ADVANCE_CALENDAR_NOT_AN_OBSERVED_INTERVENTION"}
-    for h in sorted({max(24, fc.HORIZON_OF[t]) for t, *_ in fc.TARGETS}):
-        ep, info = fc.crossing_episodes_h(X, Y, fid, h)
+    for h in sorted({max(24, horizon) for _, _, _, horizon in targets}):
+        ep, info = fc.crossing_episodes_h(
+            X, Y, fid, h,
+            locators=fc.CALENDAR_LOCATORS if calendar_locator_columns is None else calendar_locator_columns,
+            targets=targets,
+            history_columns=history_columns,
+            pre_return_columns=pre_return_columns,
+            mediator_target=mediator_target,
+            volatility_regime_column=volatility_regime_column,
+            placebo_outcome_column=placebo_outcome_column,
+        )
         if ep is not None:
             info["upstream_mechanism"] = B.upstream_mechanism(ep, [c for c in ep.columns if c.startswith("W_")])
         sets[h] = (ep, info)
     return sets, {}
 
 
-def run_feature(fid, meta, X, Y, folds, permutations, y_sd):
+def run_feature(fid, meta, X, Y, folds, permutations, y_sd, *, targets=None,
+                history_columns=None, pre_return_columns=None, calendar_locator_columns=None,
+                mediator_target="Y_s_1h", volatility_regime_column="px.ewma_vol_168",
+                placebo_outcome_column="px.logret_24h"):
+    """Run the unchanged three-rung method for one feature.
+
+    The optional declarations make the existing scientific implementation usable
+    by a generic target pack. Omitting them preserves the historical EURUSD path
+    byte-for-byte: its module constants remain the defaults.
+    """
     t0 = time.time()
+    targets = fc.TARGETS if targets is None else targets
+    history_columns = fc.H_BASE if history_columns is None else history_columns
+    pre_return_columns = fc.PRE_RETURNS if pre_return_columns is None else pre_return_columns
     clock = meta["clock"]
-    hist = [c for c in fc.H_BASE if c in X and c != fid]
+    hist = [c for c in history_columns if c in X and c != fid]
     H = X[hist].to_numpy(float)
-    pool_names = [c for c in fc.PRE_RETURNS if c in X and c != fid]
+    pool_names = [c for c in pre_return_columns if c in X and c != fid]
     pool = X[pool_names].to_numpy(float) if pool_names else None
     a = X[fid].to_numpy(float)
-    sets, na = _episode_sets(X, Y, fid, clock)
+    sets, na = _episode_sets(
+        X, Y, fid, clock, targets=targets, history_columns=history_columns,
+        pre_return_columns=pre_return_columns, calendar_locator_columns=calendar_locator_columns,
+        mediator_target=mediator_target, volatility_regime_column=volatility_regime_column,
+        placebo_outcome_column=placebo_outcome_column,
+    )
     cells, feature_rec = [], {"feature_id": fid, **meta, "episode_sets": {}}
     for h, (ep, info) in sets.items():
         feature_rec["episode_sets"][str(h)] = {k: v for k, v in info.items()}
     if na:
         feature_rec["episode_sets"]["not_applicable"] = na
-    for name, family, head, horizon in fc.TARGETS:
+    for name, family, head, horizon in targets:
         if name not in Y:
             continue
         y = Y[name].to_numpy(float)
@@ -199,7 +228,8 @@ def run_feature(fid, meta, X, Y, folds, permutations, y_sd):
                     nl["confirmation_identity"] = R.confirmation_identity(
                         {k: (r2.get("population") or {}).get(k) for k in ("population_n", "population_sha256", "estimand_id")}, nl)
                     cell["rung2"]["nonlinear"] = nl
-                    r3, n3 = fc.rung3_cell(ep, target=name, r2_state=r2["state"], w_cols=w_cols)
+                    r3, n3 = fc.rung3_cell(ep, target=name, r2_state=r2["state"], w_cols=w_cols,
+                                           mediator_target=mediator_target)
                 else:
                     cell["rung2"]["nonlinear"] = None
                     r3, n3 = {"state": ps3c.NOT_IDENTIFIED, "label": "NONE", "reasons": ["RUNG2_NOT_IDENTIFIED"]}, 0

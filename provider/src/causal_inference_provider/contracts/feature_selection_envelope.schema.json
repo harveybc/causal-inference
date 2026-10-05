@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "feature_selection_envelope.v1",
+  "title": "Warehouse outbox envelope for one phase-1 feature",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "unit_id", "unit_key", "identity_sha256", "split", "target_pack", "dataset",
+               "status", "causal_state", "artifacts_sha256", "metrics"],
+  "properties": {
+    "schema": {"const": "feature_selection_envelope.v1"},
+    "unit_id": {"type": "string", "minLength": 1},
+    "unit_key": {"type": "string", "minLength": 1},
+    "identity_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "split": {"const": "TRAIN"},
+    "target_pack": {"enum": ["EURUSD", "ETH"]},
+    "dataset": {"type": "object"},
+    "status": {"enum": ["COMPLETED", "NOT_AVAILABLE", "NOT_APPLICABLE"]},
+    "causal_state": {"const": "RAW_AWAITING_GLOBAL_BH_FDR"},
+    "artifacts_sha256": {"type": "object"},
+    "metrics": {"type": "object"}
+  }
+}

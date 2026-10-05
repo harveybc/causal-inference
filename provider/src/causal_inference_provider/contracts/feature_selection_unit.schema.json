@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "feature_selection_unit.v1",
+  "title": "Phase-1 per-column feature-selection unit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "unit_id", "split", "dataset", "feature", "target_pack", "folds", "output_dir"],
+  "properties": {
+    "schema": {"const": "feature_selection_unit.v1"},
+    "unit_id": {"type": "string", "minLength": 1},
+    "split": {"const": "TRAIN"},
+    "dataset": {
+      "type": "object",
+      "required": ["resource_id", "path", "timestamp_column", "feature_column", "frequency", "calendar"],
+      "properties": {
+        "resource_id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "format": {"enum": ["csv", "parquet", "pq"]},
+        "timestamp_column": {"type": "string", "minLength": 1},
+        "feature_column": {"type": "string", "minLength": 1},
+        "frequency": {"type": "string", "minLength": 1},
+        "calendar": {"type": "string", "minLength": 1}
+      }
+    },
+    "feature": {
+      "type": "object",
+      "required": ["family", "clock"],
+      "properties": {
+        "family": {"type": "string", "minLength": 1},
+        "clock": {"type": "string", "minLength": 1}
+      }
+    },
+    "target_pack": {
+      "type": "object",
+      "required": ["id", "path", "timestamp_column", "definitions"],
+      "properties": {
+        "id": {"enum": ["EURUSD", "ETH"]},
+        "path": {"type": "string", "minLength": 1},
+        "format": {"enum": ["csv", "parquet", "pq"]},
+        "timestamp_column": {"type": "string", "minLength": 1},
+        "definitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "column", "family", "head", "horizon_hours"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "column": {"type": "string", "minLength": 1},
+              "family": {"type": "string", "minLength": 1},
+              "head": {"type": "string", "minLength": 1},
+              "horizon_hours": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "history_columns": {"type": "array", "items": {"type": "string"}},
+        "pre_return_columns": {"type": "array", "items": {"type": "string"}},
+        "calendar_locator_columns": {"type": "array", "items": {"type": "string"}},
+        "mediator_target": {"type": ["string", "null"]},
+        "volatility_regime_column": {"type": ["string", "null"]},
+        "placebo_outcome_column": {"type": ["string", "null"]}
+      }
+    },
+    "folds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["train_rows", "validation_rows"],
+        "properties": {
+          "train_rows": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 3},
+          "validation_rows": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 3}
+        }
+      }
+    },
+    "train_period": {"type": "array", "items": {"type": ["string", "null"]}, "minItems": 2, "maxItems": 2},
+    "ps1_profile": {"type": "object"},
+    "permutations": {"type": "integer", "minimum": 1},
+    "output_dir": {"type": "string", "minLength": 1}
+  }
+}

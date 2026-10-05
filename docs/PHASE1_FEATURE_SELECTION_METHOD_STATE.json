@@ -1,0 +1,27 @@
+{
+  "schema": "test_led_method_state.v1",
+  "initiative": "generic_phase1_per_column_feature_selection_worker",
+  "current_stage": "integration_verification_complete",
+  "requirements": [
+    "typed config-driven per-column TRAIN worker",
+    "PS1 profile computation or accepted typed payload",
+    "raw three-rung causal evidence via existing implementation",
+    "atomic immutable terminal and typed offline outbox",
+    "complete-inventory global BH/FDR finalization",
+    "EURUSD and ETH target packs supplied by configuration"
+  ],
+  "exclusions": [
+    "GPU execution",
+    "experiment execution",
+    "live service calls",
+    "warehouse ingestion",
+    "feature-extractability phase"
+  ],
+  "governing_tests": "provider/tests/test_feature_selection_worker.py",
+  "traceability": "docs/PHASE1_FEATURE_SELECTION_TRACEABILITY.md",
+  "next_allowed_actions": [
+    "owner-side warehouse consumer for feature_selection_envelope.v1",
+    "inventory scheduler using one run-column process per unit",
+    "real TRAIN inventory execution"
+  ]
+}
