@@ -318,3 +318,15 @@ def test_feature_weight_against_only_counts_robust_contradicted():
     assert agg["weighs_against"] is False and agg["supported_cells"] == 1 and agg["not_identified_never_eliminates"]
     cells[0]["rung2"]["robust"] = True
     assert fc.feature_weight_against(cells)["weighs_against"] is True
+
+
+def test_rung2_propensity_is_scale_invariant_small_unit_covariates():
+    """A confounder measured in units of 1e-3 (a log return) must be adjusted as well as the same confounder in units of 1."""
+    ep = binary_episodes(effect=1.0, seed=7)
+    tiny = ep.copy()
+    tiny["W_w"] = tiny["W_w"] * 1e-3
+    r2a, _, _ = run_r2(ep)
+    r2b, _, _ = run_r2(tiny)
+    assert r2a["state"] == ps3c.IDENTIFIED and r2b["state"] == ps3c.IDENTIFIED, (r2a["reasons"], r2b["reasons"])
+    assert r2a["estimate"]["value"] == pytest.approx(r2b["estimate"]["value"], abs=1e-5)
+    assert r2a["support"]["balance_max_smd"] == pytest.approx(r2b["support"]["balance_max_smd"], abs=1e-5)

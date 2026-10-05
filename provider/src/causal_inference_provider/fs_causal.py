@@ -330,9 +330,10 @@ def vol_regime_dummies(vol_prev, train_vol):
 def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None, band=None, locators=CALENDAR_LOCATORS):
     """Horizon-aware crossing episodes: decision rows spaced >= max(24, horizon_h) hours so outcome windows are disjoint.
 
-    Common support BY CONSTRUCTION: both arms start from the same pre-row band [q60, q80).
-    A=1: first available crossing of the TRAIN q80 threshold (row t-1 inside [q60, q80), row t at/above).
-    A=0: rows that stayed below with the previous value inside [q60, q80). W from row t-1.
+    Common support BY CONSTRUCTION: both arms start from the same pre-row band [band, q80) with
+    band = max(q60, q80 - 2*SD_TRAIN(one-step change)), the states from which a one-step crossing is plausible.
+    A=1: first available crossing of the TRAIN q80 threshold (row t-1 inside the band, row t at/above).
+    A=0: rows that stayed below with the previous value inside the band. W from row t-1.
     A crossing from far below the band has no control counterpart and is not an episode (the repaired gate
     forbids trimming, so support is declared in the design, not recovered by dropping rows afterwards).
     Episodes of both arms are chosen sequentially in time with past-only spacing rules (never on the future path).
@@ -343,11 +344,19 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
     if ok.sum() < 200 or np.nanstd(x) == 0:
         return None, {"reason": "TOO_FEW_FINITE_OR_CONSTANT"}
     thr = float(np.nanquantile(x, q)) if threshold is None else float(threshold)
-    band = float(np.nanquantile(x, band_q)) if band is None else float(band)
-    if not band < thr:
-        return None, {"reason": "THRESHOLD_BAND_DEGENERATE", "threshold": thr}
     tn = pd.DatetimeIndex(pd.to_datetime(X["t_decision_utc"], utc=True)).as_unit("ns").asi8
     H_NS = 3600 * 10**9
+    # Pre-row band shared by both arms: at least q60, but no further below the threshold than two TRAIN standard
+    # deviations of the feature's one-step change -- the states from which a crossing within one step is plausible.
+    # For a persistent feature the q60 band is far wider than one step can bridge; its lower part holds controls
+    # that no treated episode can resemble (pilot: weighted SMD of the pre-row level ~1.0), so the band narrows.
+    step = np.diff(x)
+    step = step[np.isfinite(step) & ((tn[1:] - tn[:-1]) <= 72 * H_NS)]
+    sd_step = float(np.std(step)) if len(step) else 0.0
+    band_q_value = float(np.nanquantile(x, band_q))
+    band = max(band_q_value, thr - 2.0 * sd_step) if band is None else float(band)
+    if not band < thr:
+        return None, {"reason": "THRESHOLD_BAND_DEGENERATE", "threshold": thr, "band": band}
     prev, now = x[:-1], x[1:]
     with np.errstate(invalid="ignore"):
         cross = np.where((prev < thr) & (now >= thr) & (prev >= band))[0] + 1
@@ -399,7 +408,8 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
             ep[name] = Y[name].to_numpy(float)[rows]
     ep["M_first_hour"] = Y["Y_s_1h"].to_numpy(float)[rows] if "Y_s_1h" in Y else np.nan
     disjoint = episode_windows_disjoint(tn[rows], horizon_h)
-    info = {"threshold_q": q, "threshold": thr, "band_q": band_q, "band": band, "treated": len(treated),
+    info = {"threshold_q": q, "threshold": thr, "band_q": band_q, "band": band, "band_q_value": band_q_value,
+            "band_rule": "max(q60, thr - 2*SD_TRAIN(one-step change))", "sd_one_step": sd_step, "treated": len(treated),
             "controls": len(controls), "min_gap_h": gap_h, "horizon_h": int(horizon_h), "windows_disjoint": disjoint,
             "vol_regime_cuts_train": cuts}
     return ep, info

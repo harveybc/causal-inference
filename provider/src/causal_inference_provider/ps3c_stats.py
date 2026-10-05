@@ -19,6 +19,16 @@ def as_matrix(columns, n):
     return np.column_stack([np.asarray(c, dtype=float) for c in columns])
 
 
+def standardize(w):
+    """Column z-scores (constant columns stay zero); for scale-invariant penalised fits."""
+    w = np.asarray(w, dtype=float)
+    if w.ndim != 2 or w.shape[1] == 0:
+        return w
+    sd = w.std(0)
+    sd = np.where(sd > 0, sd, 1.0)
+    return (w - w.mean(0)) / sd
+
+
 def add_const(x):
     return np.column_stack([np.ones(len(x)), x])
 

@@ -297,7 +297,7 @@ def _dml_continuous(a, y, w, contrast):
 
 def _crossfit_arm_means(t, y, w, k=5):
     n = len(y)
-    x = st.add_const(w)
+    x = st.add_const(st.standardize(w))  # the tiny ridge must not depend on the covariates' units
     mu1, mu0 = np.empty(n), np.empty(n)
     edges = np.linspace(0, n, k + 1).astype(int)
     for j in range(k):
@@ -493,7 +493,9 @@ def rung2_effect(episodes, *, treatment, outcome, adjustment, contrast, dag, sup
             reasons.append("NO_COMMON_SUPPORT")
             sup["state"] = "NO_COMMON_SUPPORT"
         else:
-            x = st.add_const(w)
+            # the propensity logistic is ridge-penalised: fit it on standardised W so a covariate measured in
+            # small units (a log return ~1e-3) is not shrunk to zero by the penalty (scale invariance, tested)
+            x = st.add_const(st.standardize(w))
             e = st.crossfit_predict(x, t, logistic_model=True) if w.shape[1] else np.full(len(t), t.mean())
             requested_pb = tuple(map(float, support.get("propensity_bounds", (0.05, 0.95))))
             if len(requested_pb) != 2 or requested_pb[0] >= requested_pb[1]:
