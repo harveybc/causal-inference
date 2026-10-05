@@ -335,7 +335,7 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
     A=0: rows that stayed below with the previous value inside [q60, q80). W from row t-1.
     A crossing from far below the band has no control counterpart and is not an episode (the repaired gate
     forbids trimming, so support is declared in the design, not recovered by dropping rows afterwards).
-    Controls may only be excluded by PAST crossings (never by a future one) and by symmetric spacing.
+    Episodes of both arms are chosen sequentially in time with past-only spacing rules (never on the future path).
     """
     gap_h = max(24, int(horizon_h))
     x = X[fid].to_numpy(float)
@@ -353,31 +353,21 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
         cross = np.where((prev < thr) & (now >= thr) & (prev >= band))[0] + 1
         ctrl = np.where((prev < thr) & (now < thr) & (prev >= band))[0] + 1
     gap = (tn[1:] - tn[:-1]) / H_NS
-    treated, last = [], None
-    for i in cross:
-        if gap[i - 1] > 72:
-            continue
-        if last is None or (tn[i] - last) / H_NS >= gap_h:
-            treated.append(i)
-            last = tn[i]
-    tt = np.array([tn[i] for i in treated], dtype=np.int64)
-    controls, lastc = [], None
-    for i in ctrl:
-        if gap[i - 1] > 72:
-            continue
-        ti = tn[i]
-        if lastc is not None and (ti - lastc) < gap_h * H_NS:
-            continue
-        past = tt[tt <= ti]
-        if len(past) and (ti - past[-1]) < gap_h * H_NS:
-            continue
-        # a control must not sit inside the outcome window of a LATER treated episode either; that is a
-        # property of spacing, not of the future path: enforce symmetric spacing against all treated rows
-        future = tt[tt > ti]
-        if len(future) and (future[0] - ti) < gap_h * H_NS:
-            continue
-        controls.append(i)
-        lastc = ti
+    # Sequential, outcome-blind, PAST-ONLY selection over the candidate rows of both arms in time order: a row is
+    # accepted when it lies >= gap_h after the last accepted episode (disjoint outcome windows). A repeat of the
+    # same arm must wait >= 2*gap_h, which gives the opposite arm a window of exclusivity so the frequent arm does
+    # not starve the other at long horizons. Nothing here looks at rows after the candidate (no selection on the
+    # future path of the feature or of the price).
+    cand = sorted([(int(i), 1) for i in cross if gap[i - 1] <= 72] + [(int(i), 0) for i in ctrl if gap[i - 1] <= 72])
+    treated, controls = [], []
+    last_t, last_arm = None, None
+    for i, arm in cand:
+        if last_t is not None:
+            wait = (tn[i] - last_t) / H_NS
+            if wait < gap_h or (arm == last_arm and wait < 2 * gap_h):
+                continue
+        (treated if arm == 1 else controls).append(i)
+        last_t, last_arm = tn[i], arm
     rows = np.array(sorted(treated + controls), dtype=int)
     if len(rows) == 0:
         return None, {"reason": "NO_EPISODES", "threshold": thr}
@@ -386,6 +376,7 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
                        "decision_time": pd.to_datetime(X["t_decision_utc"], utc=True).to_numpy()[rows],
                        "A": np.isin(rows, treated).astype(float),
                        "W_x_prev": x[pre],
+                       "W_x_gap_to_thr_sq": (thr - x[pre]) ** 2,  # crossing propensity is nonlinear in the distance to the threshold
                        "W_x_trend_24": x[pre] - x[np.clip(pre - 24, 0, None)]})
     for c in [*H_BASE, *PRE_RETURNS]:
         if c in X and c != fid:
