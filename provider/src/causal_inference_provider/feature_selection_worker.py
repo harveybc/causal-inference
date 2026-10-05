@@ -38,6 +38,12 @@ TARGET_PACKS = {"EURUSD", "ETH"}
 COLUMN_REQUEST_SCHEMA = "phase1.column_request.v1"
 COLUMN_RESULT_SCHEMA = "phase1.column_result.v1"
 DEPLOYMENT_SCHEMA = "phase1.column_worker_deployment.v1"
+FINALIZATION_PAYLOAD_SCHEMA = "phase1.column_finalization_payload.v1"
+ORCHESTRATOR_PLAN_SCHEMA = "phase1.inventory_plan.v2"
+ORCHESTRATOR_TERMINAL_SCHEMA = "phase1.inventory_terminal.v2"
+ORCHESTRATOR_FINALIZER_SCHEMA = "phase1.finalizer_result.v1"
+TARGET_CELL_COUNTS = {"EURUSD": 14, "ETH": 6}
+MAX_FINALIZATION_PAYLOAD_BYTES = 2_000_000
 
 
 class InvalidConfiguration(ValueError):
@@ -603,6 +609,63 @@ def _column_config(request: dict[str, Any], deployment: dict[str, Any]) -> dict[
     return config
 
 
+def _validate_warehouse_envelope(envelope: dict[str, Any]) -> None:
+    if envelope.get("schema_version") != EW.SCHEMA_VERSION or set(envelope.get("rows", {})) != set(EW.ROW_FAMILIES):
+        raise InvalidConfiguration("worker envelope does not match the warehouse contract")
+    claimed = envelope.get("envelope_sha256")
+    unsigned = {key: value for key, value in envelope.items() if key != "envelope_sha256"}
+    if claimed != EW.digest(unsigned):
+        raise InvalidConfiguration("worker envelope digest is invalid")
+    for family in EW.ROW_FAMILIES:
+        for row in envelope["rows"][family]:
+            row_unsigned = {key: value for key, value in row.items() if key != "row_sha256"}
+            if row.get("row_sha256") != EW.digest(row_unsigned):
+                raise InvalidConfiguration(f"worker envelope has an invalid {family} row digest")
+
+
+def _finalization_payload(request: dict[str, Any], terminal: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
+    unit_dir = Path(terminal["terminal_path"]).parent
+    cells = [json.loads(line) for line in (unit_dir / "raw_causal_cells.jsonl").read_text().splitlines() if line]
+    feature_record = _load_json(unit_dir / "feature_record.json")
+    population_id = str(request["population_id"])
+    expected = TARGET_CELL_COUNTS.get(population_id)
+    if expected is None or len(cells) != expected:
+        raise InvalidConfiguration(
+            f"{population_id} finalization payload must contain exactly {expected} causal cells, got {len(cells)}"
+        )
+    targets = set()
+    for cell in cells:
+        if cell.get("feature_id") != request["feature_id"]:
+            raise InvalidConfiguration("raw causal cell belongs to another feature")
+        target = (cell.get("target"), cell.get("horizon_h"))
+        if target in targets:
+            raise InvalidConfiguration("raw causal cells contain a duplicate target/horizon")
+        targets.add(target)
+        if "p" not in cell.get("rung1", {}) or "p_linear" not in cell.get("rung2", {}):
+            raise InvalidConfiguration("raw causal cell omits a p-value required for global FDR")
+        sypi = (cell.get("discovery") or {}).get("sypi") or {}
+        if sypi.get("state") == "RUN" and "condition1_p" not in sypi:
+            raise InvalidConfiguration("raw causal cell omits the SyPI p-value required for global FDR")
+    if feature_record.get("feature_id") != request["feature_id"]:
+        raise InvalidConfiguration("feature record belongs to another feature")
+    payload = {
+        "schema": FINALIZATION_PAYLOAD_SCHEMA,
+        "feature_id": request["feature_id"],
+        "population_id": population_id,
+        "target_pack": request["target_pack"],
+        "plan_sha256": request["plan_sha256"],
+        "inventory_sha256": request["inventory_sha256"],
+        "request": request,
+        "unit_envelope_sha256": envelope["envelope_sha256"],
+        "raw_causal_cells": cells,
+        "feature_record": feature_record,
+    }
+    payload["payload_sha256"] = EW.digest(payload)
+    if len(_canonical_bytes(payload)) > MAX_FINALIZATION_PAYLOAD_BYTES:
+        raise InvalidConfiguration("finalization payload exceeds its 2000000-byte bound")
+    return payload
+
+
 def run_stdio(deployment_path: str | Path, input_text: str) -> tuple[dict[str, Any], int]:
     """Execute exactly one orchestrator request and return its sole stdout object."""
     request: dict[str, Any] = {}
@@ -623,6 +686,8 @@ def run_stdio(deployment_path: str | Path, input_text: str) -> tuple[dict[str, A
         with contextlib.redirect_stdout(sys.stderr):
             terminal = run_column(config_path)
         envelope = _load_json(Path(terminal["envelope_path"]))
+        _validate_warehouse_envelope(envelope)
+        payload = _finalization_payload(request, terminal, envelope)
         terminal_state = terminal.get("terminal_status", terminal["status"])
         state = "COMPLETED" if terminal_state == "COMPLETED" else "UNAVAILABLE"
         return {
@@ -631,6 +696,7 @@ def run_stdio(deployment_path: str | Path, input_text: str) -> tuple[dict[str, A
             "state": state,
             "request_sha256": request["request_sha256"],
             "envelope": envelope,
+            "finalization_payload": payload,
         }, 0
     except Exception as trouble:  # one typed result is the transport contract
         return {
@@ -642,6 +708,184 @@ def run_stdio(deployment_path: str | Path, input_text: str) -> tuple[dict[str, A
         }, 1
 
 
+def _verified_plan(path: Path) -> dict[str, Any]:
+    plan = _load_json(path)
+    if plan.get("schema") != ORCHESTRATOR_PLAN_SCHEMA:
+        raise InvalidConfiguration(f"plan schema must be {ORCHESTRATOR_PLAN_SCHEMA}")
+    claimed = plan.get("plan_sha256")
+    if claimed != EW.digest({key: value for key, value in plan.items() if key != "plan_sha256"}):
+        raise InvalidConfiguration("plan_sha256 does not cover PLAN.json")
+    items = plan.get("items") or []
+    if len(items) != plan.get("inventory_total") or len({item.get("feature_id") for item in items}) != len(items):
+        raise IncompleteInventory("PLAN.json inventory denominator is inconsistent")
+    return plan
+
+
+def _verified_orchestrator_terminal(path: Path, item: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    terminal = _load_json(path)
+    claimed = terminal.get("terminal_sha256")
+    if terminal.get("schema") != ORCHESTRATOR_TERMINAL_SCHEMA or claimed != EW.digest(
+            {key: value for key, value in terminal.items() if key != "terminal_sha256"}):
+        raise IncompleteInventory(f"invalid orchestrator terminal for {item['feature_id']}")
+    bindings = {
+        "feature_id": item["feature_id"], "key": item["key"],
+        "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+    }
+    for key, value in bindings.items():
+        if terminal.get(key) != value:
+            raise IncompleteInventory(f"terminal {key} contradicts PLAN.json for {item['feature_id']}")
+    if terminal.get("state") not in {"COMPLETED", "UNAVAILABLE"}:
+        raise IncompleteInventory(f"terminal state is not closure-eligible for {item['feature_id']}")
+    result = terminal.get("result")
+    if not isinstance(result, dict) or result.get("schema") != COLUMN_RESULT_SCHEMA \
+            or result.get("feature_id") != item["feature_id"] or result.get("state") != terminal["state"]:
+        raise IncompleteInventory(f"terminal result identity is invalid for {item['feature_id']}")
+    payload = result.get("finalization_payload")
+    if payload is None:
+        if terminal["state"] == "UNAVAILABLE" and item.get("available") is False:
+            return terminal
+        raise IncompleteInventory(f"terminal has no finalization payload for {item['feature_id']}")
+    if not isinstance(payload, dict) or payload.get("schema") != FINALIZATION_PAYLOAD_SCHEMA:
+        raise IncompleteInventory(f"unknown finalization payload for {item['feature_id']}")
+    if len(_canonical_bytes(payload)) > MAX_FINALIZATION_PAYLOAD_BYTES:
+        raise IncompleteInventory(f"finalization payload exceeds its bound for {item['feature_id']}")
+    if payload.get("payload_sha256") != EW.digest(
+            {key: value for key, value in payload.items() if key != "payload_sha256"}):
+        raise IncompleteInventory(f"finalization payload digest is invalid for {item['feature_id']}")
+    request = payload.get("request")
+    if not isinstance(request, dict) or request.get("request_sha256") != EW.digest(
+            {key: value for key, value in request.items() if key != "request_sha256"}):
+        raise IncompleteInventory(f"worker request digest is invalid for {item['feature_id']}")
+    request_bindings = {
+        "schema": COLUMN_REQUEST_SCHEMA, "feature_id": item["feature_id"], "feature_key": item["key"],
+        "population_id": plan["population_id"], "target_pack": plan["target_pack"],
+        "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+        "inventory_row_sha256": item["inventory_row_sha256"],
+    }
+    for key, value in request_bindings.items():
+        if request.get(key) != value:
+            raise IncompleteInventory(f"worker request {key} contradicts PLAN.json for {item['feature_id']}")
+    payload_bindings = {
+        "feature_id": item["feature_id"], "population_id": plan["population_id"],
+        "target_pack": plan["target_pack"], "plan_sha256": plan["plan_sha256"],
+        "inventory_sha256": plan["inventory_sha256"],
+    }
+    for key, value in payload_bindings.items():
+        if payload.get(key) != value:
+            raise IncompleteInventory(f"finalization payload {key} contradicts PLAN.json for {item['feature_id']}")
+    if EW.digest(request.get("inventory_row")) != item["inventory_row_sha256"]:
+        raise IncompleteInventory(f"worker inventory row is invalid for {item['feature_id']}")
+    if result.get("request_sha256") != request["request_sha256"]:
+        raise IncompleteInventory(f"worker result request identity is invalid for {item['feature_id']}")
+    envelope = result.get("envelope")
+    if not isinstance(envelope, dict):
+        raise IncompleteInventory(f"worker result has no envelope for {item['feature_id']}")
+    _validate_warehouse_envelope(envelope)
+    if payload.get("unit_envelope_sha256") != envelope["envelope_sha256"]:
+        raise IncompleteInventory(f"payload/envelope identity mismatch for {item['feature_id']}")
+    expected = TARGET_CELL_COUNTS.get(plan["population_id"])
+    cells = payload.get("raw_causal_cells")
+    if not isinstance(cells, list) or len(cells) != expected:
+        raise IncompleteInventory(f"causal cell denominator is invalid for {item['feature_id']}")
+    targets = set()
+    for cell in cells:
+        target = (cell.get("target"), cell.get("horizon_h"))
+        if target in targets:
+            raise IncompleteInventory(f"causal evidence repeats a target for {item['feature_id']}")
+        targets.add(target)
+        if cell.get("feature_id") != item["feature_id"] or "p" not in cell.get("rung1", {}) \
+                or "p_linear" not in cell.get("rung2", {}):
+            raise IncompleteInventory(f"causal evidence is incomplete for {item['feature_id']}")
+        sypi = (cell.get("discovery") or {}).get("sypi") or {}
+        if sypi.get("state") == "RUN" and "condition1_p" not in sypi:
+            raise IncompleteInventory(f"SyPI evidence is incomplete for {item['feature_id']}")
+    if (payload.get("feature_record") or {}).get("feature_id") != item["feature_id"]:
+        raise IncompleteInventory(f"feature record is invalid for {item['feature_id']}")
+    return terminal
+
+
+def finalize_orchestrator_terminals(plan_path: str | Path, terminals_dir: str | Path,
+                                    output_path: str | Path) -> dict[str, Any]:
+    """Apply global correction using only payloads retained by the coordinator."""
+    plan = _verified_plan(Path(plan_path).expanduser().resolve())
+    terminals_root = Path(terminals_dir).expanduser().resolve()
+    terminals = []
+    for item in plan["items"]:
+        terminal_path = terminals_root / f"{item['key']}.json"
+        if not terminal_path.is_file():
+            raise IncompleteInventory(f"missing terminal for {item['feature_id']}")
+        terminals.append((item, _verified_orchestrator_terminal(terminal_path, item, plan)))
+    unexpected = sorted(path.name for path in terminals_root.glob("*.json")
+                        if path.stem not in {item["key"] for item in plan["items"]})
+    if unexpected:
+        raise IncompleteInventory(f"terminal directory contains unplanned files: {unexpected[:3]}")
+    payloads = [terminal["result"]["finalization_payload"] for _, terminal in terminals
+                if terminal["result"].get("finalization_payload") is not None]
+    with tempfile.TemporaryDirectory(prefix="phase1-finalizer-") as temporary:
+        working = Path(temporary)
+        chunks = []
+        for index, payload in enumerate(payloads):
+            chunk_id = f"unit_{index:05d}"
+            chunk = working / chunk_id
+            chunk.mkdir()
+            _write_bytes_atomic(chunk / "cells.jsonl", b"".join(
+                _canonical_bytes(cell) for cell in payload["raw_causal_cells"]
+            ))
+            record = payload["feature_record"]
+            _write_json_atomic(chunk / "features.json", {
+                "features": [record], "failures": [], "cost": {"wall_s": record.get("cost_s", 0.0)},
+            })
+            _write_json_atomic(chunk / "READY", {"payload_sha256": payload["payload_sha256"]})
+            chunks.append({"id": chunk_id, "features": [payload["feature_id"]]})
+        final_cells = []
+        summary = {"cells": 0, "per_state": {}}
+        if chunks:
+            raw_cells = [cell for payload in payloads for cell in payload["raw_causal_cells"]]
+            _write_json_atomic(working / "plan.json", {
+                "schema": "fs_causal_plan.v1", "revision": plan["plan_sha256"], "chunks": chunks,
+                "candidates_total": len(chunks), "cells_total": len(raw_cells),
+                "targets": sorted({cell["target"] for cell in raw_cells}), "seed": fc.SEED,
+                "families": {"rung1": "per target", "rung2": "per target",
+                             "sypi_condition1": "per target"},
+            })
+            summary = FB.finalize(str(working))
+            final_cells = [json.loads(line) for line in (working / "causal_evidence.jsonl").read_text().splitlines() if line]
+    rows = {family: [] for family in EW.ROW_FAMILIES}
+    campaign_hashes, created_times = set(), set()
+    for _, terminal in terminals:
+        envelope = terminal["result"].get("envelope")
+        if not isinstance(envelope, dict):
+            continue
+        campaign_hashes.add(envelope["run"]["campaign_sha256"])
+        created_times.add(envelope["run"]["created_at"])
+        for family in ("sampling_quality", "variable_profiles", "information_metrics", "pair_relations"):
+            rows[family].extend({key: value for key, value in row.items() if key != "row_sha256"}
+                                for row in envelope["rows"][family])
+    if len(campaign_hashes) > 1 or len(created_times) > 1:
+        raise IncompleteInventory("unit envelopes disagree on campaign identity")
+    population_identity = plan["inventory_sha256"]
+    rows["causal_evidence"] = EW.causal_rows(final_cells, population_identity, final=True)
+    rows["selection_decisions"] = EW.selection_rows(final_cells, population_identity)
+    envelope = EW.build_envelope({
+        "run_id": f"phase1-final:{plan['population_id']}:{plan['plan_sha256'][:16]}",
+        "campaign_sha256": next(iter(campaign_hashes), plan["config_sha256"]),
+        "code_sha256": EW.digest({"worker": _digest_file(Path(__file__)), "batch": _digest_file(Path(FB.__file__))}),
+        "input_sha256": EW.digest(sorted(terminal["terminal_sha256"] for _, terminal in terminals)),
+        "inventory_sha256": population_identity,
+        "created_at": next(iter(created_times), "1970-01-01T00:00:00Z"),
+    }, rows)
+    result = {
+        "schema": ORCHESTRATOR_FINALIZER_SCHEMA, "state": "PHASE_1_COMPLETE",
+        "terminal_count": len(terminals), "completed_count": sum(t["state"] == "COMPLETED" for _, t in terminals),
+        "unavailable_count": sum(t["state"] == "UNAVAILABLE" for _, t in terminals),
+        "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+        "cell_count": summary["cells"], "envelope": envelope,
+    }
+    result["result_sha256"] = EW.digest(result)
+    _write_json_atomic(Path(output_path).expanduser().resolve(), result)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stdio", action="store_true", help="Read one phase1.column_request.v1 from stdin")
@@ -651,6 +895,10 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--config", type=Path, required=True)
     finalize_parser = commands.add_parser("finalize-inventory", help="Verify all units and apply global BH/FDR")
     finalize_parser.add_argument("--manifest", type=Path, required=True)
+    terminal_parser = commands.add_parser("finalize-terminals", help="Finalize retained orchestrator terminals")
+    terminal_parser.add_argument("--plan", type=Path, required=True)
+    terminal_parser.add_argument("--terminals", type=Path, required=True)
+    terminal_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.stdio:
         manifest = args.deployment_manifest or os.environ.get("PHASE1_COLUMN_WORKER_DEPLOYMENT")
@@ -665,7 +913,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.error("a command or --stdio is required")
     try:
-        result = run_column(args.config) if args.command == "run-column" else finalize_inventory(args.manifest)
+        if args.command == "run-column":
+            result = run_column(args.config)
+        elif args.command == "finalize-inventory":
+            result = finalize_inventory(args.manifest)
+        else:
+            result = finalize_orchestrator_terminals(args.plan, args.terminals, args.output)
     except (InvalidConfiguration, IncompleteInventory, OSError, ValueError) as trouble:
         print(json.dumps({"status": "REFUSED", "reason": str(trouble)}, sort_keys=True), file=sys.stderr)
         return 2

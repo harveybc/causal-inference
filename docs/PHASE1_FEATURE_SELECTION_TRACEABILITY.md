@@ -13,6 +13,8 @@
 | Changed data cannot replay stale evidence | dataset and target byte digests in identity | changed-input test |
 | Warehouse handoff is typed and offline | exact six-family contract from `data-warehouse@50bddf3` | imported pinned warehouse validator; no network API in module |
 | Remote-safe worker transport | one stdin request; host-local sealed deployment resolver; one stdout result | `test_stdio_worker_resolves_host_local_deployment_and_emits_one_json` |
+| Cross-host global closure | bounded raw-cell payload retained inside each terminal; no path fields | multiprocess test deletes both remote output trees before finalization |
+| Global FDR has every p-value | exact 14-cell EURUSD / 6-cell ETH denominator and p-value validation | multi-result subprocess finalizer test |
 
 The full provider suite requires the optional `fit` environment. In the current
 interpreter, the focused phase-1 and legacy causal suites are the governing

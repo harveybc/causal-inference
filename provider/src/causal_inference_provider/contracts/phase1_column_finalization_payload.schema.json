@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase1.column_finalization_payload.v1",
+  "title": "Path-free phase-1 column finalization payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "feature_id", "population_id", "target_pack", "plan_sha256",
+    "inventory_sha256", "request", "unit_envelope_sha256",
+    "raw_causal_cells", "feature_record", "payload_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "phase1.column_finalization_payload.v1"},
+    "feature_id": {"type": "string", "minLength": 1},
+    "population_id": {"enum": ["EURUSD", "ETH"]},
+    "target_pack": {"type": "string", "minLength": 1},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request": {"type": "object"},
+    "unit_envelope_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "raw_causal_cells": {
+      "type": "array", "minItems": 6, "maxItems": 14,
+      "items": {"type": "object"}
+    },
+    "feature_record": {"type": "object"},
+    "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

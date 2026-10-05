@@ -47,6 +47,29 @@ definitions, folds, clocks and output roots come from the sealed, versioned
 `phase1.column_worker_deployment.v1` manifest. Consequently an SSH worker does
 not dereference a coordinator-local temporary path.
 
+Every completed or measured-unavailable result carries a bounded
+`phase1.column_finalization_payload.v1`. It contains the authenticated request,
+the feature record and the complete raw causal denominator: 14 target cells for
+EURUSD or 6 for ETH. It contains no source series or training arrays. The
+payload is self-hashed, capped at 2,000,000 canonical JSON bytes and retained
+inside the orchestrator terminal, so finalization never depends on a remote
+worker directory.
+
+The coordinator closes retained orchestrator terminals with the same placeholder
+interface used by `predictor@a83f7495`:
+
+```bash
+feature-selection-column finalize-terminals \
+  --plan PLAN.json --terminals terminals/ --output finalizer-result.json
+```
+
+This operation authenticates the plan, every terminal, embedded worker result,
+request, inventory row, unit envelope and finalization payload. It then applies
+global BH/FDR from the transported raw p-values, without reading datasets or
+recomputing a causal cell, and atomically writes `phase1.finalizer_result.v1`.
+Its embedded warehouse envelope contains the final causal evidence and
+selection-decision rows.
+
 ## Complete inventory
 
 ```bash
@@ -68,3 +91,7 @@ Each envelope has exactly the warehouse-owned top-level fields `schema_version`,
 families and every row has its own digest. This module writes outbox documents
 but never contacts a live service. Loading the envelope into the warehouse
 belongs to its owner process.
+
+The transport schemas are retained beside the unit schema as
+`phase1_column_finalization_payload.schema.json` and
+`phase1_finalizer_result.schema.json`.

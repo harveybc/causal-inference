@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -400,6 +401,16 @@ def test_historical_causal_defaults_equal_their_explicit_declarations():
 
 def test_stdio_worker_resolves_host_local_deployment_and_emits_one_json(tmp_path):
     unit_config = json.loads(_write_unit(tmp_path / "data").read_text())
+    source = pd.read_csv(unit_config["dataset"]["path"])
+    unit_config["target_pack"]["definitions"] = []
+    for horizon in range(1, 7):
+        column = f"target_{horizon}h"
+        source[column] = source["target_1h"] * horizon
+        unit_config["target_pack"]["definitions"].append({
+            "name": f"eth_return_{horizon}h", "column": column,
+            "family": "return", "head": "short", "horizon_hours": horizon,
+        })
+    source.to_csv(unit_config["dataset"]["path"], index=False)
     deployment = {
         "schema": "phase1.column_worker_deployment.v1",
         "version": "fixture-1",
@@ -466,6 +477,13 @@ def test_stdio_worker_resolves_host_local_deployment_and_emits_one_json(tmp_path
     assert result["feature_id"] == "signal"
     assert result["state"] == "COMPLETED"
     assert result["request_sha256"] == request["request_sha256"]
+    payload = result["finalization_payload"]
+    assert payload["schema"] == "phase1.column_finalization_payload.v1"
+    assert len(payload["raw_causal_cells"]) == 6
+    assert payload["request"] == request
+    assert payload["payload_sha256"] == worker.EW.digest(
+        {key: value for key, value in payload.items() if key != "payload_sha256"}
+    )
     _warehouse_validator()(result["envelope"])
     assert "dataset_path" not in request["inventory_row"]
 
@@ -490,3 +508,119 @@ def test_stdio_worker_resolves_host_local_deployment_and_emits_one_json(tmp_path
     unavailable_result = json.loads(unavailable.stdout)
     assert unavailable_result["state"] == "UNAVAILABLE"
     assert unavailable_result["state"] != "NOT_APPLICABLE"
+
+
+def test_multiple_stdio_results_finalize_after_remote_filesystems_are_removed(tmp_path):
+    unit_config = json.loads(_write_unit(tmp_path / "data").read_text())
+    source = pd.read_csv(unit_config["dataset"]["path"])
+    source["signal_two"] = source["signal"] * 1.5
+    definitions = []
+    for horizon in range(1, 7):
+        column = f"target_{horizon}h"
+        source[column] = source["target_1h"] * horizon
+        definitions.append({"name": f"eth_return_{horizon}h", "column": column,
+                            "family": "return", "head": "short", "horizon_hours": horizon})
+    source.to_csv(unit_config["dataset"]["path"], index=False)
+    unit_config["target_pack"]["definitions"] = definitions
+    deployment = {
+        "schema": "phase1.column_worker_deployment.v1",
+        "version": "fixture-finalizer-1",
+        "output_root": str(tmp_path / "remote-worker-output"),
+        "resources": {"fixture": {
+            "resource_id": "fixture/two-signals", "path": unit_config["dataset"]["path"],
+            "format": "csv", "timestamp_column": "time", "frequency": "1h", "calendar": "24x7",
+        }},
+        "populations": {"ETH": {
+            "target_pack_id": "eth-short-long-v1", "resource_key_field": "resource_key",
+            "feature_column_field": "feature_column", "feature_family_field": "family",
+            "feature_clock_field": "clock", "target_pack": unit_config["target_pack"],
+            "folds": unit_config["folds"], "permutations": 2,
+            "campaign_sha256": "a" * 64, "created_at": "2026-10-05T12:00:00Z",
+        }},
+    }
+    deployment["deployment_sha256"] = worker.EW.digest(deployment)
+    deployment_path = tmp_path / "deployment.json"
+    deployment_path.write_text(json.dumps(deployment), encoding="utf-8")
+    plan = {
+        "schema": "phase1.inventory_plan.v2", "phase": "PHASE_1",
+        "population_id": "ETH", "target_pack": "eth-short-long-v1",
+        "inventory_total": 2, "inventory_sha256": "e" * 64,
+        "config_sha256": "9" * 64, "items": [],
+    }
+    results = []
+    for index, (feature_id, column) in enumerate((("signal", "signal"), ("signal_two", "signal_two")), 1):
+        row = {"feature_id": feature_id, "feature_column": column, "resource_key": "fixture",
+               "family": "fixture", "clock": "OBSERVED_AT_DECISION"}
+        key = f"{index}" * 64
+        item = {"feature_id": feature_id, "key": key, "row_count": len(source),
+                "byte_count": 24, "estimated_cost": 24.0, "available": True,
+                "inventory_row_sha256": worker.EW.digest(row), "host_id": f"remote-{index}",
+                "inventory_file": f"inventory-{index}.csv"}
+        plan["items"].append(item)
+        results.append((item, row))
+    plan["plan_sha256"] = worker.EW.digest(plan)
+    plan_path = tmp_path / "PLAN.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    terminals = tmp_path / "terminals"
+    terminals.mkdir()
+    command = [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+               "--stdio", "--deployment-manifest", str(deployment_path)]
+    for attempt, (item, row) in enumerate(results, 1):
+        request = {"schema": "phase1.column_request.v1", "feature_id": item["feature_id"],
+                   "feature_key": item["key"], "population_id": "ETH",
+                   "target_pack": "eth-short-long-v1", "plan_sha256": plan["plan_sha256"],
+                   "inventory_sha256": plan["inventory_sha256"],
+                   "inventory_row_sha256": item["inventory_row_sha256"],
+                   "inventory_row": row, "attempt_number": attempt}
+        request["request_sha256"] = worker.EW.digest(request)
+        process = subprocess.run(command, input=json.dumps(request), text=True,
+                                 capture_output=True, check=False)
+        assert process.returncode == 0, process.stderr
+        result = json.loads(process.stdout)
+        terminal = {"schema": "phase1.inventory_terminal.v2", "feature_id": item["feature_id"],
+                    "key": item["key"], "state": "COMPLETED", "host_id": item["host_id"],
+                    "plan_sha256": plan["plan_sha256"],
+                    "inventory_sha256": plan["inventory_sha256"],
+                    "estimated_cost": item["estimated_cost"], "duration_seconds": 0.1,
+                    "return_code": 0, "attempt_sha256": f"{attempt + 2}" * 64, "result": result}
+        terminal["terminal_sha256"] = worker.EW.digest(terminal)
+        (terminals / f"{item['key']}.json").write_text(json.dumps(terminal), encoding="utf-8")
+
+    first_terminal_path = terminals / f"{results[0][0]['key']}.json"
+    original_terminal = first_terminal_path.read_text(encoding="utf-8")
+    incomplete = json.loads(original_terminal)
+    del incomplete["result"]["finalization_payload"]["raw_causal_cells"][0]["rung1"]["p"]
+    payload = incomplete["result"]["finalization_payload"]
+    payload["payload_sha256"] = worker.EW.digest(
+        {key: value for key, value in payload.items() if key != "payload_sha256"}
+    )
+    incomplete["terminal_sha256"] = worker.EW.digest(
+        {key: value for key, value in incomplete.items() if key != "terminal_sha256"}
+    )
+    first_terminal_path.write_text(json.dumps(incomplete), encoding="utf-8")
+    refused = subprocess.run(
+        [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+         "finalize-terminals", "--plan", str(plan_path), "--terminals", str(terminals),
+         "--output", str(tmp_path / "must-not-exist.json")],
+        text=True, capture_output=True, check=False,
+    )
+    assert refused.returncode == 2
+    assert "causal evidence is incomplete" in refused.stderr
+    assert not (tmp_path / "must-not-exist.json").exists()
+    first_terminal_path.write_text(original_terminal, encoding="utf-8")
+
+    shutil.rmtree(tmp_path / "remote-worker-output")
+    final_output = tmp_path / "finalizer-result.json"
+    finalized = subprocess.run(
+        [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+         "finalize-terminals", "--plan", str(plan_path), "--terminals", str(terminals),
+         "--output", str(final_output)],
+        text=True, capture_output=True, check=False,
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    document = json.loads(final_output.read_text())
+    assert document["schema"] == "phase1.finalizer_result.v1"
+    assert document["state"] == "PHASE_1_COMPLETE"
+    assert document["terminal_count"] == 2
+    assert len(document["envelope"]["rows"]["selection_decisions"]) == 12
+    _warehouse_validator()(document["envelope"])

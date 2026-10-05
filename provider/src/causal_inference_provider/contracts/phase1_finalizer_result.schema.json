@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase1.finalizer_result.v1",
+  "title": "Phase-1 retained-terminal finalizer result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "state", "terminal_count", "completed_count",
+    "unavailable_count", "plan_sha256", "inventory_sha256", "cell_count",
+    "envelope", "result_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "phase1.finalizer_result.v1"},
+    "state": {"const": "PHASE_1_COMPLETE"},
+    "terminal_count": {"type": "integer", "minimum": 0},
+    "completed_count": {"type": "integer", "minimum": 0},
+    "unavailable_count": {"type": "integer", "minimum": 0},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "cell_count": {"type": "integer", "minimum": 0},
+    "envelope": {"type": "object"},
+    "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

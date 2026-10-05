@@ -142,7 +142,10 @@ def pair_relation_rows(feature_id: str, X, Y, target_definitions, frequency: str
                 unique_lags[int(round(ratio))] = duration
         for lag, duration in sorted(unique_lags.items()):
             shifted = np.full(len(a), np.nan)
-            shifted[lag:] = a[:len(a) - lag] if lag else a
+            if lag == 0:
+                shifted[:] = a
+            elif lag < len(a):
+                shifted[lag:] = a[:-lag]
             mask = np.isfinite(shifted) & np.isfinite(y)
             for method in ("pearson", "spearman"):
                 row = {"feature_id": feature_id, "target_id": target.name, "horizon": target.horizon_hours,
