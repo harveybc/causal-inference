@@ -1,9 +1,9 @@
 """Generic, CPU-only phase-1 worker for one inventory time series.
 
-The worker profiles one TRAIN column and delegates all causal calculations to
-``fs_causal_batch.run_feature``. Per-column output is deliberately raw: causal
-states become final only when ``finalize-inventory`` verifies the complete
-inventory and delegates multiplicity correction to ``fs_causal_batch.finalize``.
+CAUSAL mode profiles one TRAIN column and delegates causal calculations to
+``fs_causal_batch.run_feature``. PROFILE_ONLY mode publishes the established
+noncausal metric families without constructing causal evidence. Causal states
+become final only after complete-inventory multiplicity correction.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ ORCHESTRATOR_TERMINAL_SCHEMA = "phase1.inventory_terminal.v2"
 ORCHESTRATOR_FINALIZER_SCHEMA = "phase1.finalizer_result.v1"
 TARGET_CELL_COUNTS = {"EURUSD": 14, "ETH": 6}
 MAX_FINALIZATION_PAYLOAD_BYTES = 2_000_000
+MAX_PROFILE_RESULT_BYTES = 2_000_000
+MAX_PROFILE_MERGE_BYTES = 256_000_000
+EXECUTION_MODES = {"CAUSAL", "PROFILE_ONLY"}
+PROFILE_MERGE_SCHEMA = "phase1.profile_merge_result.v1"
 
 
 class InvalidConfiguration(ValueError):
@@ -274,6 +278,8 @@ def _validate_unit(config: dict[str, Any]) -> list[TargetDefinition]:
         raise InvalidConfiguration(f"schema must be {UNIT_SCHEMA}")
     if config.get("split") != "TRAIN":
         raise InvalidConfiguration("phase-1 workers read TRAIN only")
+    if config.get("mode") not in EXECUTION_MODES:
+        raise InvalidConfiguration(f"mode must be explicitly declared as one of {sorted(EXECUTION_MODES)}")
     for key in ("unit_id", "dataset", "target_pack", "run", "output_dir"):
         if key not in config:
             raise InvalidConfiguration(f"missing {key}")
@@ -286,6 +292,106 @@ def _validate_unit(config: dict[str, Any]) -> list[TargetDefinition]:
         if key not in run:
             raise InvalidConfiguration(f"run missing {key}")
     return _target_definitions(config["target_pack"])
+
+
+def _profile_only_column(config_path: Path, config: dict[str, Any],
+                         definitions: list[TargetDefinition]) -> dict[str, Any]:
+    """Publish PS1 and pair metrics without constructing causal evidence."""
+    if config.get("ps1_profile") is not None:
+        raise InvalidConfiguration("PROFILE_ONLY recomputation cannot reuse a supplied PS1 profile")
+    dataset_identity = _declared_file_identity(config["dataset"])
+    target_identity = _declared_file_identity(config["target_pack"])
+    supplied_profile = config.get("ps1_profile") or {}
+    profile_identity = _declared_file_identity(supplied_profile) if supplied_profile.get("path") else None
+    identity = {
+        "schema": UNIT_SCHEMA,
+        "mode": "PROFILE_ONLY",
+        "config": config,
+        "config_sha256": _digest_file(config_path),
+        "inputs": {"dataset": dataset_identity, "targets": target_identity, "ps1_profile": profile_identity},
+        "metric_code_sha256": {
+            "worker": _digest_file(Path(__file__)),
+            "profile": _digest_file(Path(sys.modules[_profile_series.__module__].__file__)),
+            "envelope": _digest_file(Path(EW.__file__)),
+        },
+    }
+    identity_sha = _digest_bytes(_canonical_bytes(identity))
+    root = Path(config["output_dir"]).expanduser().resolve()
+    unit_id = str(config["unit_id"])
+    unit_key = f"{unit_id}-{identity_sha[:16]}"
+    unit_dir = root / "units" / unit_key
+    terminal_path = unit_dir / "terminal.json"
+    envelope_path = root / "outbox" / f"{unit_key}.json"
+    if _terminal_is_valid(terminal_path, identity_sha) and envelope_path.exists():
+        terminal = _load_json(terminal_path)
+        if _digest_file(envelope_path) != terminal.get("outbox_file_sha256"):
+            raise InvalidConfiguration(f"outbox integrity failed for {unit_id}")
+        return {**terminal, "terminal_status": terminal["status"], "status": "REPLAY",
+                "terminal_path": str(terminal_path), "envelope_path": str(envelope_path)}
+    if terminal_path.exists():
+        raise InvalidConfiguration(f"immutable terminal integrity failed for {unit_id}")
+    root.mkdir(parents=True, exist_ok=True)
+    for stale in root.glob(f".staging-{unit_id}-*"):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+    staging = Path(tempfile.mkdtemp(prefix=f".staging-{unit_id}-", dir=root))
+    try:
+        X = Y = None
+        dataset_path = Path(config["dataset"]["path"]).expanduser().resolve()
+        if not dataset_path.is_file():
+            profile = _unavailable_profile(unit_id, config, "DATASET_NOT_AVAILABLE")
+            status = "UNAVAILABLE"
+        else:
+            source = _read_table(config["dataset"])
+            required = [config["dataset"]["timestamp_column"], config["dataset"]["feature_column"]]
+            absent = [column for column in required if column not in source]
+            if absent:
+                profile = _unavailable_profile(unit_id, config, "FEATURE_COLUMN_NOT_AVAILABLE")
+                profile["columns"] = absent
+                status = "UNAVAILABLE"
+            else:
+                profile = _profile(config, source)
+                target_path = Path(config["target_pack"]["path"]).expanduser().resolve()
+                if not target_path.is_file():
+                    status = "UNAVAILABLE"
+                else:
+                    X, Y, missing = _prepare_scientific_frames(config, source, definitions)
+                    status = "UNAVAILABLE" if missing or X.empty else "COMPLETED"
+        profile_path = staging / "ps1_profile.json"
+        _write_json_atomic(profile_path, profile)
+        target_pairs = [(target.name, target.horizon_hours) for target in definitions]
+        rows = EW.profile_rows(profile, target_pairs, identity_sha)
+        if status == "COMPLETED" and X is not None and Y is not None:
+            rows["pair_relations"] = EW.pair_relation_rows(
+                unit_id, X, Y, definitions, config["dataset"]["frequency"], identity_sha,
+            )
+        rows["causal_evidence"] = []
+        rows["selection_decisions"] = []
+        envelope = EW.build_envelope({
+            "run_id": f"{config['run']['run_id']}:{unit_key}",
+            "campaign_sha256": config["run"]["campaign_sha256"],
+            "code_sha256": EW.digest(identity["metric_code_sha256"]),
+            "input_sha256": EW.digest(identity["inputs"]),
+            "inventory_sha256": config["run"]["inventory_sha256"],
+            "created_at": config["run"]["created_at"],
+        }, rows)
+        envelope_bytes = _canonical_bytes(envelope)
+        terminal = {
+            "schema": TERMINAL_SCHEMA, "mode": "PROFILE_ONLY", "unit_id": unit_id,
+            "unit_key": unit_key, "identity_sha256": identity_sha, "status": status,
+            "global_state": "PROFILE_ONLY_AWAITING_MERGE",
+            "artifacts_sha256": {profile_path.name: _digest_file(profile_path)},
+            "envelope_sha256": envelope["envelope_sha256"],
+            "outbox_file_sha256": _digest_bytes(envelope_bytes), "profile": profile,
+        }
+        _write_json_atomic(staging / "terminal.json", terminal)
+        _write_bytes_atomic(envelope_path, envelope_bytes)
+        unit_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging, unit_dir)
+        return {**terminal, "terminal_path": str(terminal_path), "envelope_path": str(envelope_path)}
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def _terminal_is_valid(path: Path, identity_sha: str) -> bool:
@@ -308,6 +414,8 @@ def run_column(config_path: str | Path) -> dict[str, Any]:
     config_path = Path(config_path).expanduser().resolve()
     config = _load_json(config_path)
     definitions = _validate_unit(config)
+    if config["mode"] == "PROFILE_ONLY":
+        return _profile_only_column(config_path, config, definitions)
     dataset_identity = _declared_file_identity(config["dataset"])
     target_identity = _declared_file_identity(config["target_pack"])
     supplied_profile = config.get("ps1_profile") or {}
@@ -421,6 +529,7 @@ def run_column(config_path: str | Path) -> dict[str, Any]:
         envelope_bytes = _canonical_bytes(envelope)
         terminal = {
             "schema": TERMINAL_SCHEMA,
+            "mode": "CAUSAL",
             "unit_id": unit_id,
             "unit_key": unit_key,
             "identity_sha256": identity_sha,
@@ -574,6 +683,8 @@ def _column_config(request: dict[str, Any], deployment: dict[str, Any]) -> dict[
         raise InvalidConfiguration(f"deployment has no population {population_id!r}")
     if population.get("target_pack_id") != request.get("target_pack"):
         raise InvalidConfiguration("request target_pack contradicts deployment")
+    if population.get("mode") not in EXECUTION_MODES:
+        raise InvalidConfiguration(f"deployment population must explicitly declare one of {sorted(EXECUTION_MODES)}")
     resource_key = row.get(population.get("resource_key_field", "resource_key"))
     resource = (deployment.get("resources") or {}).get(resource_key)
     if not isinstance(resource, dict):
@@ -585,6 +696,7 @@ def _column_config(request: dict[str, Any], deployment: dict[str, Any]) -> dict[
     output_root = Path(deployment["output_root"]).expanduser().resolve() / str(population_id)
     config = {
         "schema": UNIT_SCHEMA,
+        "mode": population["mode"],
         "unit_id": feature_id,
         "split": "TRAIN",
         "dataset": {**resource, "feature_column": feature_column},
@@ -687,11 +799,24 @@ def run_stdio(deployment_path: str | Path, input_text: str) -> tuple[dict[str, A
             terminal = run_column(config_path)
         envelope = _load_json(Path(terminal["envelope_path"]))
         _validate_warehouse_envelope(envelope)
-        payload = _finalization_payload(request, terminal, envelope)
         terminal_state = terminal.get("terminal_status", terminal["status"])
         state = "COMPLETED" if terminal_state == "COMPLETED" else "UNAVAILABLE"
+        if config["mode"] == "PROFILE_ONLY":
+            if envelope["rows"]["causal_evidence"] or envelope["rows"]["selection_decisions"]:
+                raise InvalidConfiguration("PROFILE_ONLY envelope contains causal rows")
+            result = {
+                "schema": COLUMN_RESULT_SCHEMA, "mode": "PROFILE_ONLY",
+                "feature_id": request["feature_id"], "state": state,
+                "request_sha256": request["request_sha256"], "request": request,
+                "envelope": envelope,
+            }
+            if len(_canonical_bytes(result)) > MAX_PROFILE_RESULT_BYTES:
+                raise InvalidConfiguration("PROFILE_ONLY result exceeds its 2000000-byte bound")
+            return result, 0
+        payload = _finalization_payload(request, terminal, envelope)
         return {
             "schema": COLUMN_RESULT_SCHEMA,
+            "mode": "CAUSAL",
             "feature_id": request["feature_id"],
             "state": state,
             "request_sha256": request["request_sha256"],
@@ -718,6 +843,8 @@ def _verified_plan(path: Path) -> dict[str, Any]:
     items = plan.get("items") or []
     if len(items) != plan.get("inventory_total") or len({item.get("feature_id") for item in items}) != len(items):
         raise IncompleteInventory("PLAN.json inventory denominator is inconsistent")
+    if plan.get("mode", "CAUSAL") not in EXECUTION_MODES:
+        raise InvalidConfiguration(f"PLAN.json mode must be one of {sorted(EXECUTION_MODES)}")
     return plan
 
 
@@ -740,6 +867,8 @@ def _verified_orchestrator_terminal(path: Path, item: dict[str, Any], plan: dict
     if not isinstance(result, dict) or result.get("schema") != COLUMN_RESULT_SCHEMA \
             or result.get("feature_id") != item["feature_id"] or result.get("state") != terminal["state"]:
         raise IncompleteInventory(f"terminal result identity is invalid for {item['feature_id']}")
+    if result.get("mode", "CAUSAL") != "CAUSAL":
+        raise IncompleteInventory(f"PROFILE_ONLY result cannot authorize causal closure for {item['feature_id']}")
     payload = result.get("finalization_payload")
     if payload is None:
         if terminal["state"] == "UNAVAILABLE" and item.get("available") is False:
@@ -804,10 +933,130 @@ def _verified_orchestrator_terminal(path: Path, item: dict[str, Any], plan: dict
     return terminal
 
 
+def _verified_profile_terminal(path: Path, item: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    terminal = _load_json(path)
+    claimed = terminal.get("terminal_sha256")
+    unsigned = {key: value for key, value in terminal.items() if key != "terminal_sha256"}
+    if terminal.get("schema") != ORCHESTRATOR_TERMINAL_SCHEMA or claimed != EW.digest(unsigned):
+        raise IncompleteInventory(f"invalid profile terminal for {item['feature_id']}")
+    bindings = {
+        "feature_id": item["feature_id"], "key": item["key"],
+        "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+    }
+    for key, value in bindings.items():
+        if terminal.get(key) != value:
+            raise IncompleteInventory(f"profile terminal {key} contradicts PLAN.json for {item['feature_id']}")
+    if terminal.get("state") != "COMPLETED":
+        raise IncompleteInventory(
+            f"profile terminal is not complete for {item['feature_id']}: {terminal.get('state')}"
+        )
+    result = terminal.get("result")
+    if not isinstance(result, dict) or result.get("schema") != COLUMN_RESULT_SCHEMA \
+            or result.get("mode") != "PROFILE_ONLY" or result.get("feature_id") != item["feature_id"] \
+            or result.get("state") != terminal["state"]:
+        raise IncompleteInventory(f"profile result identity is invalid for {item['feature_id']}")
+    if "finalization_payload" in result:
+        raise IncompleteInventory(f"profile result carries a causal finalization payload for {item['feature_id']}")
+    if len(_canonical_bytes(result)) > MAX_PROFILE_RESULT_BYTES:
+        raise IncompleteInventory(f"profile result exceeds its bound for {item['feature_id']}")
+    request = result.get("request")
+    if not isinstance(request, dict) or request.get("request_sha256") != EW.digest(
+            {key: value for key, value in request.items() if key != "request_sha256"}):
+        raise IncompleteInventory(f"profile worker request digest is invalid for {item['feature_id']}")
+    request_bindings = {
+        "schema": COLUMN_REQUEST_SCHEMA, "feature_id": item["feature_id"], "feature_key": item["key"],
+        "population_id": plan["population_id"], "target_pack": plan["target_pack"],
+        "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+        "inventory_row_sha256": item["inventory_row_sha256"],
+    }
+    for key, value in request_bindings.items():
+        if request.get(key) != value:
+            raise IncompleteInventory(f"profile request {key} contradicts PLAN.json for {item['feature_id']}")
+    if EW.digest(request.get("inventory_row")) != item["inventory_row_sha256"]:
+        raise IncompleteInventory(f"profile inventory row is invalid for {item['feature_id']}")
+    if result.get("request_sha256") != request["request_sha256"]:
+        raise IncompleteInventory(f"profile result request identity is invalid for {item['feature_id']}")
+    envelope = result.get("envelope")
+    if not isinstance(envelope, dict):
+        raise IncompleteInventory(f"profile result has no envelope for {item['feature_id']}")
+    _validate_warehouse_envelope(envelope)
+    if envelope["rows"]["causal_evidence"] or envelope["rows"]["selection_decisions"]:
+        raise IncompleteInventory(f"profile envelope contains causal closure rows for {item['feature_id']}")
+    if envelope["run"].get("campaign_sha256") != plan.get("campaign_sha256") \
+            or envelope["run"].get("inventory_sha256") != plan["inventory_sha256"]:
+        raise IncompleteInventory(f"profile campaign identity is invalid for {item['feature_id']}")
+    noncausal = ("sampling_quality", "variable_profiles", "information_metrics", "pair_relations")
+    if terminal["state"] == "COMPLETED" and any(not envelope["rows"][family] for family in noncausal):
+        raise IncompleteInventory(f"profile result omits a metric family for {item['feature_id']}")
+    for family in noncausal:
+        if any(row.get("feature_id") != item["feature_id"] for row in envelope["rows"][family]):
+            raise IncompleteInventory(f"profile {family} rows belong to another feature")
+    return terminal
+
+
+def merge_profile_terminals(plan_path: str | Path, terminals_dir: str | Path,
+                            output_path: str | Path) -> dict[str, Any]:
+    """Merge a complete retained PROFILE_ONLY denominator without remote paths."""
+    plan = _verified_plan(Path(plan_path).expanduser().resolve())
+    if plan.get("mode") != "PROFILE_ONLY" or not isinstance(plan.get("campaign_sha256"), str):
+        raise InvalidConfiguration("profile merge requires a distinct PROFILE_ONLY campaign")
+    terminals_root = Path(terminals_dir).expanduser().resolve()
+    expected_names = {f"{item['key']}.json" for item in plan["items"]}
+    actual_names = {path.name for path in terminals_root.glob("*.json")}
+    if actual_names != expected_names:
+        missing, unexpected = sorted(expected_names - actual_names), sorted(actual_names - expected_names)
+        raise IncompleteInventory(f"profile denominator mismatch; missing={missing[:3]}, unexpected={unexpected[:3]}")
+    verified = []
+    for item in plan["items"]:
+        path = terminals_root / f"{item['key']}.json"
+        verified.append((item, _verified_profile_terminal(path, item, plan)))
+    rows = {family: [] for family in EW.ROW_FAMILIES}
+    created_times = set()
+    for _, terminal in verified:
+        envelope = terminal["result"]["envelope"]
+        created_times.add(envelope["run"]["created_at"])
+        for family in ("sampling_quality", "variable_profiles", "information_metrics", "pair_relations"):
+            for sealed in envelope["rows"][family]:
+                row = {key: value for key, value in sealed.items() if key != "row_sha256"}
+                row["population_id"] = plan["inventory_sha256"]
+                rows[family].append(row)
+    if len(created_times) != 1:
+        raise IncompleteInventory("profile unit envelopes disagree on campaign clock")
+    for family in rows:
+        rows[family].sort(key=EW.canonical_json)
+    envelope = EW.build_envelope({
+        "run_id": f"phase1-profile:{plan['population_id']}:{plan['plan_sha256'][:16]}",
+        "campaign_sha256": plan["campaign_sha256"],
+        "code_sha256": EW.digest({
+            "worker": _digest_file(Path(__file__)),
+            "profile": _digest_file(Path(sys.modules[_profile_series.__module__].__file__)),
+            "envelope": _digest_file(Path(EW.__file__)),
+        }),
+        "input_sha256": EW.digest(sorted(terminal["terminal_sha256"] for _, terminal in verified)),
+        "inventory_sha256": plan["inventory_sha256"],
+        "created_at": next(iter(created_times)),
+    }, rows)
+    result = {
+        "schema": PROFILE_MERGE_SCHEMA, "mode": "PROFILE_ONLY", "state": "PROFILE_METRICS_COMPLETE",
+        "terminal_count": len(verified),
+        "completed_count": sum(terminal["state"] == "COMPLETED" for _, terminal in verified),
+        "unavailable_count": sum(terminal["state"] == "UNAVAILABLE" for _, terminal in verified),
+        "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+        "envelope": envelope,
+    }
+    result["result_sha256"] = EW.digest(result)
+    if len(_canonical_bytes(result)) > MAX_PROFILE_MERGE_BYTES:
+        raise IncompleteInventory("merged profile result exceeds its 256000000-byte bound")
+    _write_json_atomic(Path(output_path).expanduser().resolve(), result)
+    return result
+
+
 def finalize_orchestrator_terminals(plan_path: str | Path, terminals_dir: str | Path,
                                     output_path: str | Path) -> dict[str, Any]:
     """Apply global correction using only payloads retained by the coordinator."""
     plan = _verified_plan(Path(plan_path).expanduser().resolve())
+    if plan.get("mode", "CAUSAL") != "CAUSAL":
+        raise InvalidConfiguration("PROFILE_ONLY campaigns cannot enter causal finalization")
     terminals_root = Path(terminals_dir).expanduser().resolve()
     terminals = []
     for item in plan["items"]:
@@ -899,6 +1148,11 @@ def main(argv: list[str] | None = None) -> int:
     terminal_parser.add_argument("--plan", type=Path, required=True)
     terminal_parser.add_argument("--terminals", type=Path, required=True)
     terminal_parser.add_argument("--output", type=Path, required=True)
+    profile_parser = commands.add_parser("merge-profile-terminals",
+                                         help="Merge retained PROFILE_ONLY terminals")
+    profile_parser.add_argument("--plan", type=Path, required=True)
+    profile_parser.add_argument("--terminals", type=Path, required=True)
+    profile_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.stdio:
         manifest = args.deployment_manifest or os.environ.get("PHASE1_COLUMN_WORKER_DEPLOYMENT")
@@ -917,8 +1171,10 @@ def main(argv: list[str] | None = None) -> int:
             result = run_column(args.config)
         elif args.command == "finalize-inventory":
             result = finalize_inventory(args.manifest)
-        else:
+        elif args.command == "finalize-terminals":
             result = finalize_orchestrator_terminals(args.plan, args.terminals, args.output)
+        else:
+            result = merge_profile_terminals(args.plan, args.terminals, args.output)
     except (InvalidConfiguration, IncompleteInventory, OSError, ValueError) as trouble:
         print(json.dumps({"status": "REFUSED", "reason": str(trouble)}, sort_keys=True), file=sys.stderr)
         return 2

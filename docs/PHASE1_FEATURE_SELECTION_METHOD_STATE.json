@@ -9,7 +9,8 @@
     "atomic immutable terminal and exact warehouse-owned offline envelope",
     "complete-inventory global BH/FDR finalization",
     "EURUSD and ETH target packs supplied by configuration",
-    "stdio-json-v1 orchestration boundary resolved through a versioned host-local deployment"
+    "stdio-json-v1 orchestration boundary resolved through a versioned host-local deployment",
+    "bounded PROFILE_ONLY transport and complete-inventory coordinator merge isolated from causal closure"
   ],
   "exclusions": [
     "GPU execution",
@@ -24,6 +25,7 @@
     "orchestrator deployment with a sealed host-local deployment manifest",
     "owner-side ingestion of the validated feature_selection_envelope.v1",
     "inventory scheduler using one run-column process per unit",
-    "real TRAIN inventory execution"
+    "real TRAIN inventory execution",
+    "one-time EURUSD 366-column PROFILE_ONLY campaign using retained terminals"
   ]
 }

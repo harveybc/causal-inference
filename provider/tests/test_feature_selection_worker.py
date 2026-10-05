@@ -48,6 +48,7 @@ def _write_unit(tmp_path: Path, *, feature: str = "signal", missing_target: bool
     rows.to_csv(dataset, index=False)
     config = {
         "schema": "feature_selection_unit.v1",
+        "mode": "CAUSAL",
         "unit_id": feature,
         "split": "TRAIN",
         "dataset": {
@@ -427,6 +428,7 @@ def test_stdio_worker_resolves_host_local_deployment_and_emits_one_json(tmp_path
         },
         "populations": {
             "ETH": {
+                "mode": "CAUSAL",
                 "target_pack_id": "eth-short-long-v1",
                 "resource_key_field": "resource_key",
                 "feature_column_field": "feature_column",
@@ -531,6 +533,7 @@ def test_multiple_stdio_results_finalize_after_remote_filesystems_are_removed(tm
             "format": "csv", "timestamp_column": "time", "frequency": "1h", "calendar": "24x7",
         }},
         "populations": {"ETH": {
+            "mode": "CAUSAL",
             "target_pack_id": "eth-short-long-v1", "resource_key_field": "resource_key",
             "feature_column_field": "feature_column", "feature_family_field": "family",
             "feature_clock_field": "clock", "target_pack": unit_config["target_pack"],
@@ -624,3 +627,173 @@ def test_multiple_stdio_results_finalize_after_remote_filesystems_are_removed(tm
     assert document["terminal_count"] == 2
     assert len(document["envelope"]["rows"]["selection_decisions"]) == 12
     _warehouse_validator()(document["envelope"])
+
+
+def test_profile_only_direct_mode_never_calls_causal_ladder(tmp_path, monkeypatch):
+    config_path = _write_unit(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["mode"] = "PROFILE_ONLY"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("PROFILE_ONLY must not run causal evidence")
+
+    monkeypatch.setattr(worker.FB, "run_feature", forbidden)
+    result = worker.run_column(config_path)
+    envelope = json.loads(Path(result["envelope_path"]).read_text())
+    assert result["mode"] == "PROFILE_ONLY"
+    assert result["global_state"] == "PROFILE_ONLY_AWAITING_MERGE"
+    assert envelope["rows"]["sampling_quality"]
+    assert envelope["rows"]["variable_profiles"]
+    assert envelope["rows"]["information_metrics"]
+    assert envelope["rows"]["pair_relations"]
+    assert envelope["rows"]["causal_evidence"] == []
+    assert envelope["rows"]["selection_decisions"] == []
+    assert not (Path(result["terminal_path"]).parent / "raw_causal_cells.jsonl").exists()
+    _warehouse_validator()(envelope)
+
+    supplied = json.loads(config_path.read_text())
+    supplied["ps1_profile"] = {"payload": result["profile"]}
+    supplied_path = tmp_path / "supplied-profile.json"
+    supplied_path.write_text(json.dumps(supplied), encoding="utf-8")
+    with pytest.raises(worker.InvalidConfiguration, match="cannot reuse"):
+        worker.run_column(supplied_path)
+
+
+def test_profile_only_stdio_merge_is_path_free_bounded_and_not_causal_closure(tmp_path):
+    unit_config = json.loads(_write_unit(tmp_path / "data").read_text())
+    source = pd.read_csv(unit_config["dataset"]["path"])
+    source["signal_two"] = source["signal"] * 1.5
+    source.to_csv(unit_config["dataset"]["path"], index=False)
+    campaign_sha = "7" * 64
+    deployment = {
+        "schema": "phase1.column_worker_deployment.v1", "version": "profile-only-fixture-1",
+        "output_root": str(tmp_path / "remote-profile-output"),
+        "resources": {"fixture": {
+            "resource_id": "fixture/two-signals", "path": unit_config["dataset"]["path"],
+            "format": "csv", "timestamp_column": "time", "frequency": "1h", "calendar": "24x7",
+        }},
+        "populations": {"EURUSD": {
+            "mode": "PROFILE_ONLY", "target_pack_id": "eurusd-profile-v1",
+            "resource_key_field": "resource_key", "feature_column_field": "feature_column",
+            "feature_family_field": "family", "feature_clock_field": "clock",
+            "target_pack": {**unit_config["target_pack"], "id": "EURUSD"},
+            "folds": unit_config["folds"], "permutations": 2,
+            "campaign_sha256": campaign_sha, "created_at": "2026-10-05T12:00:00Z",
+        }},
+    }
+    deployment["deployment_sha256"] = worker.EW.digest(deployment)
+    deployment_path = tmp_path / "profile-deployment.json"
+    deployment_path.write_text(json.dumps(deployment), encoding="utf-8")
+    plan = {
+        "schema": "phase1.inventory_plan.v2", "phase": "PHASE_1",
+        "mode": "PROFILE_ONLY", "population_id": "EURUSD", "target_pack": "eurusd-profile-v1",
+        "inventory_total": 2, "inventory_sha256": "8" * 64,
+        "config_sha256": "9" * 64, "campaign_sha256": campaign_sha, "items": [],
+    }
+    inventory = []
+    for index, (feature_id, column) in enumerate((("signal", "signal"), ("signal_two", "signal_two")), 1):
+        row = {"feature_id": feature_id, "feature_column": column, "resource_key": "fixture",
+               "family": "fixture", "clock": "OBSERVED_AT_DECISION"}
+        key = f"{index + 4}" * 64
+        item = {"feature_id": feature_id, "key": key, "row_count": len(source),
+                "byte_count": 24, "estimated_cost": 24.0, "available": True,
+                "inventory_row_sha256": worker.EW.digest(row), "host_id": f"remote-{index}",
+                "inventory_file": f"inventory-{index}.csv"}
+        plan["items"].append(item)
+        inventory.append((item, row))
+    plan["plan_sha256"] = worker.EW.digest(plan)
+    plan_path = tmp_path / "PROFILE_PLAN.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    terminals = tmp_path / "profile-terminals"
+    terminals.mkdir()
+    worker_command = [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+                      "--stdio", "--deployment-manifest", str(deployment_path)]
+    for attempt, (item, row) in enumerate(inventory, 1):
+        request = {"schema": "phase1.column_request.v1", "feature_id": item["feature_id"],
+                   "feature_key": item["key"], "population_id": "EURUSD",
+                   "target_pack": "eurusd-profile-v1", "plan_sha256": plan["plan_sha256"],
+                   "inventory_sha256": plan["inventory_sha256"],
+                   "inventory_row_sha256": item["inventory_row_sha256"],
+                   "inventory_row": row, "attempt_number": attempt}
+        request["request_sha256"] = worker.EW.digest(request)
+        process = subprocess.run(worker_command, input=json.dumps(request), text=True,
+                                 capture_output=True, check=False)
+        assert process.returncode == 0, process.stderr
+        result = json.loads(process.stdout)
+        assert result["mode"] == "PROFILE_ONLY"
+        assert result["request"] == request
+        assert "finalization_payload" not in result
+        assert len(process.stdout.encode("utf-8")) <= worker.MAX_PROFILE_RESULT_BYTES
+        assert result["envelope"]["rows"]["causal_evidence"] == []
+        assert result["envelope"]["rows"]["selection_decisions"] == []
+        terminal = {"schema": "phase1.inventory_terminal.v2", "feature_id": item["feature_id"],
+                    "key": item["key"], "state": "COMPLETED", "host_id": item["host_id"],
+                    "plan_sha256": plan["plan_sha256"], "inventory_sha256": plan["inventory_sha256"],
+                    "estimated_cost": item["estimated_cost"], "duration_seconds": 0.1,
+                    "return_code": 0, "attempt_sha256": f"{attempt + 6}" * 64, "result": result}
+        terminal["terminal_sha256"] = worker.EW.digest(terminal)
+        (terminals / f"{item['key']}.json").write_text(json.dumps(terminal), encoding="utf-8")
+
+    first_path = terminals / f"{inventory[0][0]['key']}.json"
+    original = first_path.read_text(encoding="utf-8")
+    mutated = json.loads(original)
+    mutated["result"]["envelope"]["rows"]["sampling_quality"][0]["metric_value"] = 999
+    mutated["terminal_sha256"] = worker.EW.digest(
+        {key: value for key, value in mutated.items() if key != "terminal_sha256"}
+    )
+    first_path.write_text(json.dumps(mutated), encoding="utf-8")
+    refused_path = tmp_path / "refused-profile-merge.json"
+    merge_command = [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+                     "merge-profile-terminals", "--plan", str(plan_path),
+                     "--terminals", str(terminals), "--output", str(refused_path)]
+    refused = subprocess.run(merge_command, text=True, capture_output=True, check=False)
+    assert refused.returncode == 2
+    assert not refused_path.exists()
+    first_path.write_text(original, encoding="utf-8")
+
+    shutil.rmtree(tmp_path / "remote-profile-output")
+    output_path = tmp_path / "profile-merge.json"
+    merged = subprocess.run([*merge_command[:-1], str(output_path)], text=True,
+                            capture_output=True, check=False)
+    assert merged.returncode == 0, merged.stderr
+    document = json.loads(output_path.read_text())
+    assert document["schema"] == "phase1.profile_merge_result.v1"
+    assert document["state"] == "PROFILE_METRICS_COMPLETE"
+    assert document["terminal_count"] == plan["inventory_total"]
+    assert document["mode"] == "PROFILE_ONLY"
+    assert document["envelope"]["rows"]["causal_evidence"] == []
+    assert document["envelope"]["rows"]["selection_decisions"] == []
+    _warehouse_validator()(document["envelope"])
+
+    causal_output = tmp_path / "must-not-be-causal.json"
+    causal = subprocess.run(
+        [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+         "finalize-terminals", "--plan", str(plan_path), "--terminals", str(terminals),
+         "--output", str(causal_output)], text=True, capture_output=True, check=False,
+    )
+    assert causal.returncode == 2
+    assert "PROFILE_ONLY" in causal.stderr
+    assert not causal_output.exists()
+
+
+def test_profile_merge_refuses_an_incomplete_366_column_eurusd_denominator(tmp_path):
+    plan = {
+        "schema": "phase1.inventory_plan.v2", "phase": "PHASE_1", "mode": "PROFILE_ONLY",
+        "population_id": "EURUSD", "target_pack": "eurusd-profile-v1",
+        "inventory_total": 366, "inventory_sha256": "8" * 64,
+        "config_sha256": "9" * 64, "campaign_sha256": "7" * 64,
+        "items": [
+            {"feature_id": f"feature_{index:03d}", "key": f"{index:064x}",
+             "inventory_row_sha256": f"{index + 1:064x}", "available": True}
+            for index in range(366)
+        ],
+    }
+    plan["plan_sha256"] = worker.EW.digest(plan)
+    plan_path = tmp_path / "PLAN.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    terminals = tmp_path / "terminals"
+    terminals.mkdir()
+    with pytest.raises(worker.IncompleteInventory, match="profile denominator mismatch"):
+        worker.merge_profile_terminals(plan_path, terminals, tmp_path / "must-not-exist.json")
+    assert not (tmp_path / "must-not-exist.json").exists()

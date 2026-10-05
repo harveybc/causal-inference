@@ -94,4 +94,40 @@ belongs to its owner process.
 
 The transport schemas are retained beside the unit schema as
 `phase1_column_finalization_payload.schema.json` and
-`phase1_finalizer_result.schema.json`.
+`phase1_finalizer_result.schema.json`; profile merge output uses
+`phase1_profile_merge_result.schema.json`.
+
+## Profile-only refresh
+
+`PROFILE_ONLY` is a separate campaign mode for recomputing the current PS1 and
+pair-relation tables without rerunning a causal cell. The mode must be declared
+both in the host-local population manifest and in `PLAN.json`; it is deliberately
+absent from `phase1.column_request.v1`, so request identity and host-local data
+resolution are unchanged.
+
+Each stdout result remains `phase1.column_result.v1`, carries
+`mode: PROFILE_ONLY`, the authenticated request and a warehouse-valid envelope.
+Only `sampling_quality`, `variable_profiles`, `information_metrics` and
+`pair_relations` contain rows. `causal_evidence` and `selection_decisions` are
+present because the warehouse owns a fixed six-family contract, but are empty.
+There is no `finalization_payload`. The complete stdout object is limited to
+2,000,000 canonical JSON bytes.
+
+The coordinator merges retained results with:
+
+```bash
+feature-selection-column merge-profile-terminals \
+  --plan PLAN.json \
+  --terminals retained-terminals/ \
+  --output profile-merge-result.json
+```
+
+The command authenticates the complete PLAN denominator (366 items for the
+current EURUSD inventory), every terminal, request, inventory row, campaign and
+warehouse row. It never reads a worker path. Rows are sorted canonically and
+the output is a deterministic `phase1.profile_merge_result.v1` containing one
+warehouse envelope. The causal finalizer refuses a `PROFILE_ONLY` plan, so this
+metric refresh cannot authorize feature selection or masquerade as BH/FDR
+closure. A transported `UNAVAILABLE` result is explicit but cannot enter a
+`PROFILE_METRICS_COMPLETE` merge: every item in the declared denominator must
+be `COMPLETED`.

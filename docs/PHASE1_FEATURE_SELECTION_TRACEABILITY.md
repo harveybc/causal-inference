@@ -15,6 +15,11 @@
 | Remote-safe worker transport | one stdin request; host-local sealed deployment resolver; one stdout result | `test_stdio_worker_resolves_host_local_deployment_and_emits_one_json` |
 | Cross-host global closure | bounded raw-cell payload retained inside each terminal; no path fields | multiprocess test deletes both remote output trees before finalization |
 | Global FDR has every p-value | exact 14-cell EURUSD / 6-cell ETH denominator and p-value validation | multi-result subprocess finalizer test |
+| Profile refresh cannot rerun causal work | explicit `PROFILE_ONLY` unit/deployment mode and separate publisher | forbidden `FB.run_feature` test |
+| Profile transport is bounded and path-free | envelope plus authenticated request, no causal payload, 2 MB limit | remote directories deleted before subprocess merge |
+| Profile and causal closure cannot be confused | distinct PLAN mode, result mode, output schema and CLI | causal finalizer rejection test |
+| Full EURUSD profile denominator is mandatory | PLAN hash plus exact terminal filename set | explicit incomplete 366-column denial test |
+| Profile merge detects mutation | terminal, request, envelope and row digest verification | envelope mutation with resealed outer terminal is rejected |
 
 The full provider suite requires the optional `fit` environment. In the current
 interpreter, the focused phase-1 and legacy causal suites are the governing

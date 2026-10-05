@@ -10,7 +10,15 @@
     "version": {"type": "string", "minLength": 1},
     "output_root": {"type": "string", "minLength": 1},
     "resources": {"type": "object", "minProperties": 1},
-    "populations": {"type": "object", "minProperties": 1},
+    "populations": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {"mode": {"enum": ["CAUSAL", "PROFILE_ONLY"]}}
+      }
+    },
     "deployment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   }
 }
