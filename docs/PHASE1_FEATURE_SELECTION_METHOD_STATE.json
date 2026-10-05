@@ -11,7 +11,8 @@
     "EURUSD and ETH target packs supplied by configuration",
     "stdio-json-v1 orchestration boundary resolved through a versioned host-local deployment",
     "bounded PROFILE_ONLY transport and complete-inventory coordinator merge isolated from causal closure",
-    "authenticated composition of current EURUSD profiles with retained adopted causal evidence"
+    "authenticated composition of current EURUSD profiles with retained adopted causal evidence",
+    "independent profile/adopted inventory namespaces normalized into one combined population identity"
   ],
   "exclusions": [
     "GPU execution",

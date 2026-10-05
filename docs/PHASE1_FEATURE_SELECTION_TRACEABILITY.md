@@ -24,6 +24,8 @@
 | Adopted causal denominator is exact | 14 target cells, rungs 1/2/3 and one decision for every feature | missing feature and duplicate causal row denials |
 | Bundle adoption is path-safe | self-hashed report and confined relative envelope paths | real `adoption/warehouse_envelopes` layout in subprocess test |
 | Adopted bytes are bound to the predictor bundle | self-hashed `BUNDLE_MANIFEST.json`, size and SHA-256 for report and envelopes | mutation denial before composition |
+| Authenticated inventory namespaces remain distinct | profile and adopted inventories are independently verified and both bind the final input identity | valid unequal namespaces plus mixed-adoption denial |
+| Final rows share one combined population | combined digest derives from profile and adopted inventory hashes | all six output families checked against combined identity |
 | Composition never recomputes causality | envelope-only coordinator command; no call to `fs_causal*` | source inspection plus full provider regression |
 | Context cannot duplicate structural columns | ordered deduplication excludes timestamp and feature column | repeated history/pre-return/calendar regression with 1-D feature |
 

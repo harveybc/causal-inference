@@ -44,6 +44,17 @@ def _refresh_bundle_member(root: Path, relative: str) -> None:
     _write(manifest_path, manifest)
 
 
+def _reseal_envelope(document: dict) -> dict:
+    rows = {
+        family: [
+            {key: value for key, value in row.items() if key != "row_sha256"}
+            for row in document["rows"][family]
+        ]
+        for family in EW.ROW_FAMILIES
+    }
+    return EW.build_envelope(document["run"], rows)
+
+
 def _metric_rows(feature: str, population: str) -> dict[str, list[dict]]:
     base = {"feature_id": feature, "split": "train", "metric_value": 0.0,
             "state": "MEASURED", "population_id": population, "fold": None}
@@ -82,9 +93,10 @@ def _causal_rows(feature: str, population: str) -> tuple[list[dict], list[dict]]
 
 
 def _fixture(root: Path) -> tuple[Path, Path, Path]:
-    inventory = "8" * 64
-    profile_population = inventory
-    adopted_population = EW.digest({"population": "EURUSD", "inventory_sha256": inventory})
+    profile_inventory = "8" * 64
+    adopted_inventory = "9" * 64
+    profile_population = profile_inventory
+    adopted_population = EW.digest({"population": "EURUSD", "inventory_sha256": adopted_inventory})
     features = [f"feature_{index:03d}" for index in range(FEATURE_COUNT)]
     rows = {family: [] for family in EW.ROW_FAMILIES}
     for feature in features:
@@ -94,13 +106,13 @@ def _fixture(root: Path) -> tuple[Path, Path, Path]:
     profile_envelope = EW.build_envelope({
         "run_id": "phase1-profile:EURUSD:fixture", "campaign_sha256": "7" * 64,
         "code_sha256": "6" * 64, "input_sha256": "5" * 64,
-        "inventory_sha256": inventory, "created_at": "2026-10-05T12:00:00Z",
+        "inventory_sha256": profile_inventory, "created_at": "2026-10-05T12:00:00Z",
     }, rows)
     profile = {
         "schema": "phase1.profile_merge_result.v1", "mode": "PROFILE_ONLY",
         "state": "PROFILE_METRICS_COMPLETE", "terminal_count": FEATURE_COUNT,
         "completed_count": FEATURE_COUNT, "unavailable_count": 0,
-        "plan_sha256": "4" * 64, "inventory_sha256": inventory,
+        "plan_sha256": "4" * 64, "inventory_sha256": profile_inventory,
         "envelope": profile_envelope,
     }
     profile["result_sha256"] = EW.digest(profile)
@@ -114,7 +126,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path]:
         envelope = EW.build_envelope({
             "run_id": f"phase1-eurusd-adopted:{feature}", "campaign_sha256": "3" * 64,
             "code_sha256": "2" * 64, "input_sha256": "1" * 64,
-            "inventory_sha256": inventory, "created_at": "2026-10-05T00:00:00Z",
+            "inventory_sha256": adopted_inventory, "created_at": "2026-10-05T00:00:00Z",
         }, {"causal_evidence": causal, "selection_decisions": decisions})
         relative = Path("warehouse_envelopes") / f"{feature}.json"
         _write(adoption / relative, envelope)
@@ -176,6 +188,31 @@ def test_combine_adopted_eurusd_authenticates_mutations_denominators_and_366_pos
     first_envelope.write_text(original, encoding="utf-8")
     _refresh_bundle_member(tmp_path, "adoption/warehouse_envelopes/feature_000.json")
 
+    mixed = json.loads(original)
+    mixed_inventory = "a" * 64
+    mixed["run"]["inventory_sha256"] = mixed_inventory
+    mixed_population = EW.digest({"population": "EURUSD", "inventory_sha256": mixed_inventory})
+    for family in ("causal_evidence", "selection_decisions"):
+        for row in mixed["rows"][family]:
+            row["population_id"] = mixed_population
+    _write(first_envelope, _reseal_envelope(mixed))
+    _refresh_bundle_member(tmp_path, "adoption/warehouse_envelopes/feature_000.json")
+    with pytest.raises(worker.IncompleteInventory, match="single|mixed|inventory"):
+        worker.combine_adopted_eurusd(profile_path, adoption, output)
+    first_envelope.write_text(original, encoding="utf-8")
+    _refresh_bundle_member(tmp_path, "adoption/warehouse_envelopes/feature_000.json")
+
+    foreign = json.loads(original)
+    for family in EW.ROW_FAMILIES:
+        for row in foreign["rows"][family]:
+            row["feature_id"] = "foreign_feature"
+    _write(first_envelope, _reseal_envelope(foreign))
+    _refresh_bundle_member(tmp_path, "adoption/warehouse_envelopes/feature_000.json")
+    with pytest.raises(worker.IncompleteInventory, match="feature|population"):
+        worker.combine_adopted_eurusd(profile_path, adoption, output)
+    first_envelope.write_text(original, encoding="utf-8")
+    _refresh_bundle_member(tmp_path, "adoption/warehouse_envelopes/feature_000.json")
+
     original_profile = profile_path.read_text(encoding="utf-8")
     profile = json.loads(original_profile)
     profile["terminal_count"] = FEATURE_COUNT - 1
@@ -196,7 +233,16 @@ def test_combine_adopted_eurusd_authenticates_mutations_denominators_and_366_pos
     assert process.returncode == 0, process.stderr
     document = json.loads(output.read_text())
     assert document["schema_version"] == "feature_selection_envelope.v1"
-    assert document["run"]["inventory_sha256"] == "8" * 64
+    combined_population = EW.digest({
+        "population": "EURUSD",
+        "profile_inventory_sha256": "8" * 64,
+        "adopted_inventory_sha256": "9" * 64,
+    })
+    assert document["run"]["inventory_sha256"] == combined_population
+    assert {
+        row["population_id"]
+        for family in EW.ROW_FAMILIES for row in document["rows"][family]
+    } == {combined_population}
     assert len(document["rows"]["sampling_quality"]) == FEATURE_COUNT
     assert len(document["rows"]["causal_evidence"]) == FEATURE_COUNT * len(TARGETS) * 3
     assert len(document["rows"]["selection_decisions"]) == FEATURE_COUNT * len(TARGETS)

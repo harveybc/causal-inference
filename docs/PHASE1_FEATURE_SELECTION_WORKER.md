@@ -151,11 +151,18 @@ the report are resolved beneath the bundle root and cannot escape it.
 
 The command authenticates the profile result, all six warehouse families and
 row digests in every adopted envelope, `BUNDLE_MANIFEST.json`, the adoption
-report, inventory identity, 366-feature equality and the complete EURUSD
+report, both inventory namespaces, 366-feature equality and the complete EURUSD
 denominator of 14 target cells, three causal rungs and one decision per cell.
 Duplicate or missing cells are rejected. It takes the four noncausal families
 only from the profile merge and the two causal families only from adopted
 evidence; no causal method is called.
+
+The fresh profile orchestrator inventory and the retained semantic adoption
+inventory are allowed to differ. All 366 adopted envelopes must nevertheless
+share exactly one nonempty 64-character inventory identity, and every adopted
+row must carry the population digest derived from that adopted identity. The
+output binds both source inventories in its input identity and normalizes all
+six row families to a new combined EURUSD population digest derived from both.
 The output itself, rather than a parallel wrapper, is one deterministic
 `feature_selection_envelope.v1` with a new run, campaign, code, input and
 inventory identity suitable for warehouse ingestion.

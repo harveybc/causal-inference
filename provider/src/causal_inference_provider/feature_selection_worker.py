@@ -1158,8 +1158,9 @@ def _verify_profile_merge_result(path: Path) -> tuple[dict[str, Any], set[str]]:
     return result, denominator
 
 
-def _verify_adopted_evidence(adoption_dir: Path, inventory: str,
-                             expected_features: set[str]) -> tuple[dict[str, Any], list[dict[str, Any]],
+def _verify_adopted_evidence(adoption_dir: Path,
+                             expected_features: set[str]) -> tuple[dict[str, Any], str,
+                                                                   list[dict[str, Any]],
                                                                    list[dict[str, Any]], list[str]]:
     if (adoption_dir / "ADOPTION.json").is_file():
         report_dir, bundle_root = adoption_dir, adoption_dir.parent
@@ -1184,15 +1185,23 @@ def _verify_adopted_evidence(adoption_dir: Path, inventory: str,
         raise IncompleteInventory("adoption feature denominator is not exactly 366")
     if report.get("causal_rows") != EURUSD_FEATURE_COUNT * len(EURUSD_TARGET_DENOMINATOR):
         raise IncompleteInventory("adoption causal target-cell denominator is invalid")
-    expected_population = EW.digest({"population": "EURUSD", "inventory_sha256": inventory})
     causal, decisions, envelope_hashes = [], [], []
     all_features = set()
+    adopted_inventories = set()
     for relative in paths:
         path = _safe_adoption_path(bundle_root, report_dir, relative)
         _verify_bundle_member(bundle_root, path, bundle_members)
         envelope = _authenticated_envelope(_load_json(path), f"adopted {relative}")
-        if envelope["run"].get("inventory_sha256") != inventory:
-            raise IncompleteInventory(f"adopted envelope inventory identity differs: {relative}")
+        adopted_inventory = envelope["run"].get("inventory_sha256")
+        if not isinstance(adopted_inventory, str) or len(adopted_inventory) != 64:
+            raise IncompleteInventory(f"adopted envelope inventory identity is invalid: {relative}")
+        adopted_inventories.add(adopted_inventory)
+        expected_population = EW.digest({
+            "population": "EURUSD", "inventory_sha256": adopted_inventory,
+        })
+        if any(row.get("population_id") != expected_population
+               for family in EW.ROW_FAMILIES for row in envelope["rows"][family]):
+            raise IncompleteInventory(f"adopted rows have the wrong population identity: {relative}")
         envelope_hashes.append(envelope["envelope_sha256"])
         envelope_features = {
             row["feature_id"] for family in EW.ROW_FAMILIES for row in envelope["rows"][family]
@@ -1204,8 +1213,9 @@ def _verify_adopted_evidence(adoption_dir: Path, inventory: str,
         decisions.extend(envelope["rows"]["selection_decisions"])
     if all_features != expected_features:
         raise IncompleteInventory("adopted and profile feature populations have a missing or foreign feature")
-    if any(row.get("population_id") != expected_population for row in [*causal, *decisions]):
-        raise IncompleteInventory("adopted causal rows have the wrong population identity")
+    if len(adopted_inventories) != 1:
+        raise IncompleteInventory("adopted envelopes do not share a single inventory identity")
+    adopted_inventory = next(iter(adopted_inventories))
     causal_keys, decision_keys = set(), set()
     rungs_by_cell: dict[tuple[str, str, int], set[int]] = {}
     decisions_by_cell: set[tuple[str, str, int]] = set()
@@ -1230,7 +1240,7 @@ def _verify_adopted_evidence(adoption_dir: Path, inventory: str,
         raise IncompleteInventory("adopted causal evidence has a missing or foreign target cell")
     if any(rungs != {1, 2, 3} for rungs in rungs_by_cell.values()):
         raise IncompleteInventory("adopted causal target cell does not contain exactly rungs 1, 2 and 3")
-    return report, causal, decisions, envelope_hashes
+    return report, adopted_inventory, causal, decisions, envelope_hashes
 
 
 def combine_adopted_eurusd(profile_result_path: str | Path, adoption_dir: str | Path,
@@ -1239,11 +1249,15 @@ def combine_adopted_eurusd(profile_result_path: str | Path, adoption_dir: str | 
     profile_path = Path(profile_result_path).expanduser().resolve()
     adoption_root = Path(adoption_dir).expanduser().resolve()
     profile, features = _verify_profile_merge_result(profile_path)
-    inventory = profile["inventory_sha256"]
-    report, causal, decisions, adopted_hashes = _verify_adopted_evidence(
-        adoption_root, inventory, features,
+    profile_inventory = profile["inventory_sha256"]
+    report, adopted_inventory, causal, decisions, adopted_hashes = _verify_adopted_evidence(
+        adoption_root, features,
     )
-    population = EW.digest({"population": "EURUSD", "inventory_sha256": inventory})
+    population = EW.digest({
+        "population": "EURUSD",
+        "profile_inventory_sha256": profile_inventory,
+        "adopted_inventory_sha256": adopted_inventory,
+    })
     rows = {family: [] for family in EW.ROW_FAMILIES}
     for family in ("sampling_quality", "variable_profiles", "information_metrics", "pair_relations"):
         for sealed in profile["envelope"]["rows"][family]:
@@ -1251,14 +1265,20 @@ def combine_adopted_eurusd(profile_result_path: str | Path, adoption_dir: str | 
             row["population_id"] = population
             rows[family].append(row)
     rows["causal_evidence"] = [
-        {key: value for key, value in row.items() if key != "row_sha256"} for row in causal
+        {**{key: value for key, value in row.items() if key not in {"row_sha256", "population_id"}},
+         "population_id": population}
+        for row in causal
     ]
     rows["selection_decisions"] = [
-        {key: value for key, value in row.items() if key != "row_sha256"} for row in decisions
+        {**{key: value for key, value in row.items() if key not in {"row_sha256", "population_id"}},
+         "population_id": population}
+        for row in decisions
     ]
     for family in rows:
         rows[family].sort(key=EW.canonical_json)
     source_identity = {
+        "profile_inventory_sha256": profile_inventory,
+        "adopted_inventory_sha256": adopted_inventory,
         "profile_result_sha256": profile["result_sha256"],
         "adoption_sha256": report["adoption_sha256"],
         "adopted_envelope_sha256": sorted(adopted_hashes),
@@ -1272,7 +1292,7 @@ def combine_adopted_eurusd(profile_result_path: str | Path, adoption_dir: str | 
         "code_sha256": EW.digest({
             "combiner": _digest_file(Path(__file__)), "envelope": _digest_file(Path(EW.__file__)),
         }),
-        "input_sha256": EW.digest(source_identity), "inventory_sha256": inventory,
+        "input_sha256": EW.digest(source_identity), "inventory_sha256": population,
         "created_at": profile["envelope"]["run"]["created_at"],
     }, rows)
     _authenticated_envelope(envelope, "combined")
