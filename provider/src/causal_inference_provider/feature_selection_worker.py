@@ -48,6 +48,12 @@ MAX_PROFILE_RESULT_BYTES = 2_000_000
 MAX_PROFILE_MERGE_BYTES = 256_000_000
 EXECUTION_MODES = {"CAUSAL", "PROFILE_ONLY"}
 PROFILE_MERGE_SCHEMA = "phase1.profile_merge_result.v1"
+EURUSD_FEATURE_COUNT = 366
+EURUSD_TARGET_DENOMINATOR = {
+    *((f"Y_s_{hours}h", hours) for hours in (1, 2, 3, 4, 5, 6)),
+    *((f"Y_l_{hours}h", hours) for hours in (24, 48, 72, 96, 120, 144)),
+    ("Y_b_s6", 6), ("Y_b_l144", 144),
+}
 
 
 class InvalidConfiguration(ValueError):
@@ -238,8 +244,11 @@ def _prepare_scientific_frames(config: dict[str, Any], source: pd.DataFrame,
     dataset, pack = config["dataset"], config["target_pack"]
     timestamp = dataset["timestamp_column"]
     feature_column = dataset["feature_column"]
-    context = list(dict.fromkeys([*pack.get("history_columns", []), *pack.get("pre_return_columns", []),
-                                  *pack.get("calendar_locator_columns", [])]))
+    declared_context = dict.fromkeys([
+        *pack.get("history_columns", []), *pack.get("pre_return_columns", []),
+        *pack.get("calendar_locator_columns", []),
+    ])
+    context = [column for column in declared_context if column not in {timestamp, feature_column}]
     missing_context = [column for column in context if column not in source]
     if missing_context:
         return pd.DataFrame(), pd.DataFrame(), missing_context
@@ -1051,6 +1060,229 @@ def merge_profile_terminals(plan_path: str | Path, terminals_dir: str | Path,
     return result
 
 
+def _authenticated_envelope(document: Any, label: str) -> dict[str, Any]:
+    if not isinstance(document, dict):
+        raise IncompleteInventory(f"{label} is not an envelope object")
+    try:
+        _validate_warehouse_envelope(document)
+    except (InvalidConfiguration, KeyError, TypeError, ValueError) as trouble:
+        raise IncompleteInventory(f"{label} envelope or row digest is invalid: {trouble}") from trouble
+    return document
+
+
+def _safe_adoption_path(bundle_root: Path, report_dir: Path, relative: Any) -> Path:
+    if not isinstance(relative, str) or not relative:
+        raise IncompleteInventory("adoption envelope path is invalid")
+    candidate = Path(relative)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise IncompleteInventory("adoption envelope path escapes the adoption directory")
+    root = bundle_root.resolve()
+    candidates = [(bundle_root / candidate).resolve(), (report_dir / candidate).resolve()]
+    for resolved in candidates:
+        if root in resolved.parents and resolved.is_file():
+            return resolved
+    raise IncompleteInventory(f"adopted envelope is missing or escapes the bundle: {relative}")
+
+
+def _verified_bundle_members(bundle_root: Path) -> dict[str, dict[str, Any]]:
+    manifest_path = bundle_root / "BUNDLE_MANIFEST.json"
+    if not manifest_path.is_file():
+        raise IncompleteInventory("predictor adoption bundle has no BUNDLE_MANIFEST.json")
+    manifest = _load_json(manifest_path)
+    claimed = manifest.get("bundle_sha256")
+    if manifest.get("schema") != "phase1.deployment_bundle.v1" or claimed != EW.digest(
+            {key: value for key, value in manifest.items() if key != "bundle_sha256"}):
+        raise IncompleteInventory("predictor bundle manifest digest is invalid")
+    members = manifest.get("files")
+    if not isinstance(members, list):
+        raise IncompleteInventory("predictor bundle manifest has no file denominator")
+    by_path = {}
+    for item in members:
+        relative = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(relative, str) or relative in by_path:
+            raise IncompleteInventory("predictor bundle manifest has an invalid or duplicate member")
+        candidate = Path(relative)
+        resolved = (bundle_root / candidate).resolve()
+        if candidate.is_absolute() or ".." in candidate.parts or bundle_root.resolve() not in resolved.parents:
+            raise IncompleteInventory("predictor bundle manifest member escapes the bundle")
+        by_path[relative] = item
+    return by_path
+
+
+def _verify_bundle_member(bundle_root: Path, path: Path, members: dict[str, dict[str, Any]]) -> None:
+    relative = str(path.resolve().relative_to(bundle_root.resolve()))
+    item = members.get(relative)
+    if item is None or item.get("bytes") != path.stat().st_size or item.get("sha256") != _digest_file(path):
+        raise IncompleteInventory(f"predictor bundle member digest mismatch: {relative}")
+
+
+def _verify_profile_merge_result(path: Path) -> tuple[dict[str, Any], set[str]]:
+    result = _load_json(path)
+    claimed = result.get("result_sha256")
+    if claimed != EW.digest({key: value for key, value in result.items() if key != "result_sha256"}):
+        raise IncompleteInventory("profile merge result digest is invalid")
+    expected = {
+        "schema": PROFILE_MERGE_SCHEMA, "mode": "PROFILE_ONLY",
+        "state": "PROFILE_METRICS_COMPLETE", "terminal_count": EURUSD_FEATURE_COUNT,
+        "completed_count": EURUSD_FEATURE_COUNT, "unavailable_count": 0,
+    }
+    for key, value in expected.items():
+        if result.get(key) != value:
+            raise IncompleteInventory(f"profile denominator must be EURUSD 366/366: {key}")
+    inventory = result.get("inventory_sha256")
+    if not isinstance(inventory, str) or len(inventory) != 64:
+        raise IncompleteInventory("profile inventory identity is invalid")
+    envelope = _authenticated_envelope(result.get("envelope"), "profile merge")
+    if envelope["run"].get("inventory_sha256") != inventory:
+        raise IncompleteInventory("profile result and envelope inventory identities differ")
+    if envelope["rows"]["causal_evidence"] or envelope["rows"]["selection_decisions"]:
+        raise IncompleteInventory("profile merge contains causal rows")
+    families = ("sampling_quality", "variable_profiles", "information_metrics", "pair_relations")
+    populations = set()
+    feature_sets = {}
+    for family in families:
+        rows = envelope["rows"][family]
+        identities = set()
+        for row in rows:
+            identity = EW.canonical_json({key: value for key, value in row.items() if key != "row_sha256"})
+            if identity in identities:
+                raise IncompleteInventory(f"profile merge contains a duplicate {family} row")
+            identities.add(identity)
+            populations.add(row.get("population_id"))
+        feature_sets[family] = {row["feature_id"] for row in rows}
+    denominator = feature_sets["sampling_quality"]
+    if len(denominator) != EURUSD_FEATURE_COUNT or any(features != denominator for features in feature_sets.values()):
+        raise IncompleteInventory("profile metric families do not share the exact 366-feature denominator")
+    if populations != {inventory}:
+        raise IncompleteInventory("profile metric rows do not share the inventory population identity")
+    return result, denominator
+
+
+def _verify_adopted_evidence(adoption_dir: Path, inventory: str,
+                             expected_features: set[str]) -> tuple[dict[str, Any], list[dict[str, Any]],
+                                                                   list[dict[str, Any]], list[str]]:
+    if (adoption_dir / "ADOPTION.json").is_file():
+        report_dir, bundle_root = adoption_dir, adoption_dir.parent
+    elif (adoption_dir / "adoption" / "ADOPTION.json").is_file():
+        report_dir, bundle_root = adoption_dir / "adoption", adoption_dir
+    else:
+        raise IncompleteInventory("predictor bundle has no adoption/ADOPTION.json")
+    bundle_members = _verified_bundle_members(bundle_root)
+    report_path = report_dir / "ADOPTION.json"
+    _verify_bundle_member(bundle_root, report_path, bundle_members)
+    report = _load_json(report_path)
+    claimed = report.get("adoption_sha256")
+    if claimed != EW.digest({key: value for key, value in report.items() if key != "adoption_sha256"}):
+        raise IncompleteInventory("adoption report digest is invalid")
+    if report.get("schema") != "phase1.evidence_adoption.v1" \
+            or report.get("state") != "ADOPTED_VERIFIED_EVIDENCE" \
+            or report.get("population_id") != "EURUSD":
+        raise IncompleteInventory("adoption report is not retained verified EURUSD evidence")
+    paths = report.get("envelopes")
+    if report.get("feature_count") != EURUSD_FEATURE_COUNT or not isinstance(paths, list) \
+            or len(paths) != EURUSD_FEATURE_COUNT or len(set(paths)) != len(paths):
+        raise IncompleteInventory("adoption feature denominator is not exactly 366")
+    if report.get("causal_rows") != EURUSD_FEATURE_COUNT * len(EURUSD_TARGET_DENOMINATOR):
+        raise IncompleteInventory("adoption causal target-cell denominator is invalid")
+    expected_population = EW.digest({"population": "EURUSD", "inventory_sha256": inventory})
+    causal, decisions, envelope_hashes = [], [], []
+    all_features = set()
+    for relative in paths:
+        path = _safe_adoption_path(bundle_root, report_dir, relative)
+        _verify_bundle_member(bundle_root, path, bundle_members)
+        envelope = _authenticated_envelope(_load_json(path), f"adopted {relative}")
+        if envelope["run"].get("inventory_sha256") != inventory:
+            raise IncompleteInventory(f"adopted envelope inventory identity differs: {relative}")
+        envelope_hashes.append(envelope["envelope_sha256"])
+        envelope_features = {
+            row["feature_id"] for family in EW.ROW_FAMILIES for row in envelope["rows"][family]
+        }
+        if len(envelope_features) != 1:
+            raise IncompleteInventory(f"adopted envelope does not belong to exactly one feature: {relative}")
+        all_features.update(envelope_features)
+        causal.extend(envelope["rows"]["causal_evidence"])
+        decisions.extend(envelope["rows"]["selection_decisions"])
+    if all_features != expected_features:
+        raise IncompleteInventory("adopted and profile feature populations have a missing or foreign feature")
+    if any(row.get("population_id") != expected_population for row in [*causal, *decisions]):
+        raise IncompleteInventory("adopted causal rows have the wrong population identity")
+    causal_keys, decision_keys = set(), set()
+    rungs_by_cell: dict[tuple[str, str, int], set[int]] = {}
+    decisions_by_cell: set[tuple[str, str, int]] = set()
+    for row in causal:
+        key = (row["feature_id"], row["target_id"], int(row["horizon"]), int(row["rung"]))
+        if key in causal_keys:
+            raise IncompleteInventory("adopted causal evidence contains a duplicate row")
+        causal_keys.add(key)
+        cell = key[:3]
+        rungs_by_cell.setdefault(cell, set()).add(key[3])
+    for row in decisions:
+        key = (row["feature_id"], row["target_id"], int(row["horizon"]), row["method"])
+        if key in decision_keys:
+            raise IncompleteInventory("adopted selection decisions contain a duplicate row")
+        decision_keys.add(key)
+        decisions_by_cell.add(key[:3])
+    expected_cells = {
+        (feature, target, horizon)
+        for feature in expected_features for target, horizon in EURUSD_TARGET_DENOMINATOR
+    }
+    if set(rungs_by_cell) != expected_cells or decisions_by_cell != expected_cells:
+        raise IncompleteInventory("adopted causal evidence has a missing or foreign target cell")
+    if any(rungs != {1, 2, 3} for rungs in rungs_by_cell.values()):
+        raise IncompleteInventory("adopted causal target cell does not contain exactly rungs 1, 2 and 3")
+    return report, causal, decisions, envelope_hashes
+
+
+def combine_adopted_eurusd(profile_result_path: str | Path, adoption_dir: str | Path,
+                            output_path: str | Path) -> dict[str, Any]:
+    """Compose fresh profile metrics with retained adopted causal decisions."""
+    profile_path = Path(profile_result_path).expanduser().resolve()
+    adoption_root = Path(adoption_dir).expanduser().resolve()
+    profile, features = _verify_profile_merge_result(profile_path)
+    inventory = profile["inventory_sha256"]
+    report, causal, decisions, adopted_hashes = _verify_adopted_evidence(
+        adoption_root, inventory, features,
+    )
+    population = EW.digest({"population": "EURUSD", "inventory_sha256": inventory})
+    rows = {family: [] for family in EW.ROW_FAMILIES}
+    for family in ("sampling_quality", "variable_profiles", "information_metrics", "pair_relations"):
+        for sealed in profile["envelope"]["rows"][family]:
+            row = {key: value for key, value in sealed.items() if key != "row_sha256"}
+            row["population_id"] = population
+            rows[family].append(row)
+    rows["causal_evidence"] = [
+        {key: value for key, value in row.items() if key != "row_sha256"} for row in causal
+    ]
+    rows["selection_decisions"] = [
+        {key: value for key, value in row.items() if key != "row_sha256"} for row in decisions
+    ]
+    for family in rows:
+        rows[family].sort(key=EW.canonical_json)
+    source_identity = {
+        "profile_result_sha256": profile["result_sha256"],
+        "adoption_sha256": report["adoption_sha256"],
+        "adopted_envelope_sha256": sorted(adopted_hashes),
+    }
+    envelope = EW.build_envelope({
+        "run_id": f"phase1-eurusd-final:{EW.digest(source_identity)[:16]}",
+        "campaign_sha256": EW.digest({
+            "profile_campaign_sha256": profile["envelope"]["run"]["campaign_sha256"],
+            "adoption_sha256": report["adoption_sha256"],
+        }),
+        "code_sha256": EW.digest({
+            "combiner": _digest_file(Path(__file__)), "envelope": _digest_file(Path(EW.__file__)),
+        }),
+        "input_sha256": EW.digest(source_identity), "inventory_sha256": inventory,
+        "created_at": profile["envelope"]["run"]["created_at"],
+    }, rows)
+    _authenticated_envelope(envelope, "combined")
+    payload = _canonical_bytes(envelope)
+    if len(payload) > MAX_PROFILE_MERGE_BYTES:
+        raise IncompleteInventory("combined feature-selection envelope exceeds its 256000000-byte bound")
+    _write_bytes_atomic(Path(output_path).expanduser().resolve(), payload)
+    return envelope
+
+
 def finalize_orchestrator_terminals(plan_path: str | Path, terminals_dir: str | Path,
                                     output_path: str | Path) -> dict[str, Any]:
     """Apply global correction using only payloads retained by the coordinator."""
@@ -1153,6 +1385,12 @@ def main(argv: list[str] | None = None) -> int:
     profile_parser.add_argument("--plan", type=Path, required=True)
     profile_parser.add_argument("--terminals", type=Path, required=True)
     profile_parser.add_argument("--output", type=Path, required=True)
+    combine_parser = commands.add_parser(
+        "combine-adopted-eurusd", help="Combine complete EURUSD profiles with adopted causal evidence",
+    )
+    combine_parser.add_argument("--profile-result", type=Path, required=True)
+    combine_parser.add_argument("--adoption-dir", type=Path, required=True)
+    combine_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.stdio:
         manifest = args.deployment_manifest or os.environ.get("PHASE1_COLUMN_WORKER_DEPLOYMENT")
@@ -1173,8 +1411,15 @@ def main(argv: list[str] | None = None) -> int:
             result = finalize_inventory(args.manifest)
         elif args.command == "finalize-terminals":
             result = finalize_orchestrator_terminals(args.plan, args.terminals, args.output)
-        else:
+        elif args.command == "merge-profile-terminals":
             result = merge_profile_terminals(args.plan, args.terminals, args.output)
+        else:
+            envelope = combine_adopted_eurusd(args.profile_result, args.adoption_dir, args.output)
+            result = {
+                "schema": "phase1.combined_envelope_receipt.v1", "state": "COMPLETED",
+                "output": str(args.output), "envelope_sha256": envelope["envelope_sha256"],
+                "run_id": envelope["run"]["run_id"],
+            }
     except (InvalidConfiguration, IncompleteInventory, OSError, ValueError) as trouble:
         print(json.dumps({"status": "REFUSED", "reason": str(trouble)}, sort_keys=True), file=sys.stderr)
         return 2

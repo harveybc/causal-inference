@@ -131,3 +131,31 @@ metric refresh cannot authorize feature selection or masquerade as BH/FDR
 closure. A transported `UNAVAILABLE` result is explicit but cannot enter a
 `PROFILE_METRICS_COMPLETE` merge: every item in the declared denominator must
 be `COMPLETED`.
+
+## Final EURUSD OLAP envelope
+
+After the 366/366 profile merge, the coordinator can combine those current
+metrics with the already adopted EURUSD causal evidence from the predictor
+deployment bundle:
+
+```bash
+feature-selection-column combine-adopted-eurusd \
+  --profile-result profile-merge-result.json \
+  --adoption-dir <predictor-bundle-root> \
+  --output feature-selection-envelope.json
+```
+
+`--adoption-dir` may name either the bundle root containing
+`adoption/ADOPTION.json` or that `adoption` directory itself. Paths named by
+the report are resolved beneath the bundle root and cannot escape it.
+
+The command authenticates the profile result, all six warehouse families and
+row digests in every adopted envelope, `BUNDLE_MANIFEST.json`, the adoption
+report, inventory identity, 366-feature equality and the complete EURUSD
+denominator of 14 target cells, three causal rungs and one decision per cell.
+Duplicate or missing cells are rejected. It takes the four noncausal families
+only from the profile merge and the two causal families only from adopted
+evidence; no causal method is called.
+The output itself, rather than a parallel wrapper, is one deterministic
+`feature_selection_envelope.v1` with a new run, campaign, code, input and
+inventory identity suitable for warehouse ingestion.

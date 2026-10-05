@@ -20,6 +20,12 @@
 | Profile and causal closure cannot be confused | distinct PLAN mode, result mode, output schema and CLI | causal finalizer rejection test |
 | Full EURUSD profile denominator is mandatory | PLAN hash plus exact terminal filename set | explicit incomplete 366-column denial test |
 | Profile merge detects mutation | terminal, request, envelope and row digest verification | envelope mutation with resealed outer terminal is rejected |
+| Final OLAP envelope uses disjoint authenticated sources | four profile families plus two adopted causal families | 366-feature composition fixture |
+| Adopted causal denominator is exact | 14 target cells, rungs 1/2/3 and one decision for every feature | missing feature and duplicate causal row denials |
+| Bundle adoption is path-safe | self-hashed report and confined relative envelope paths | real `adoption/warehouse_envelopes` layout in subprocess test |
+| Adopted bytes are bound to the predictor bundle | self-hashed `BUNDLE_MANIFEST.json`, size and SHA-256 for report and envelopes | mutation denial before composition |
+| Composition never recomputes causality | envelope-only coordinator command; no call to `fs_causal*` | source inspection plus full provider regression |
+| Context cannot duplicate structural columns | ordered deduplication excludes timestamp and feature column | repeated history/pre-return/calendar regression with 1-D feature |
 
 The full provider suite requires the optional `fit` environment. In the current
 interpreter, the focused phase-1 and legacy causal suites are the governing

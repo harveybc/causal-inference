@@ -660,6 +660,34 @@ def test_profile_only_direct_mode_never_calls_causal_ladder(tmp_path, monkeypatc
         worker.run_column(supplied_path)
 
 
+def test_profile_only_deduplicates_feature_and_timestamp_from_all_context_lists(tmp_path, monkeypatch):
+    config_path = _write_unit(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["mode"] = "PROFILE_ONLY"
+    config["target_pack"]["history_columns"] = ["time", "signal", "history", "signal"]
+    config["target_pack"]["pre_return_columns"] = ["signal", "time", "history"]
+    config["target_pack"]["calendar_locator_columns"] = ["time", "history", "signal"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    source = pd.read_csv(config["dataset"]["path"])
+    definitions = worker._target_definitions(config["target_pack"])
+    X, _, missing = worker._prepare_scientific_frames(config, source, definitions)
+    assert missing == []
+    assert list(X.columns).count("signal") == 1
+    assert list(X.columns).count("t_decision_utc") == 1
+    assert X["signal"].ndim == 1
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("PROFILE_ONLY must not call the causal ladder")
+
+    monkeypatch.setattr(worker.FB, "run_feature", forbidden)
+    result = worker.run_column(config_path)
+    assert result["status"] == "COMPLETED"
+    envelope = json.loads(Path(result["envelope_path"]).read_text())
+    assert envelope["rows"]["pair_relations"]
+    assert envelope["rows"]["causal_evidence"] == []
+
+
 def test_profile_only_stdio_merge_is_path_free_bounded_and_not_causal_closure(tmp_path):
     unit_config = json.loads(_write_unit(tmp_path / "data").read_text())
     source = pd.read_csv(unit_config["dataset"]["path"])

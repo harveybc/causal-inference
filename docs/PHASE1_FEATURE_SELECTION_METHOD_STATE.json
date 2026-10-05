@@ -10,7 +10,8 @@
     "complete-inventory global BH/FDR finalization",
     "EURUSD and ETH target packs supplied by configuration",
     "stdio-json-v1 orchestration boundary resolved through a versioned host-local deployment",
-    "bounded PROFILE_ONLY transport and complete-inventory coordinator merge isolated from causal closure"
+    "bounded PROFILE_ONLY transport and complete-inventory coordinator merge isolated from causal closure",
+    "authenticated composition of current EURUSD profiles with retained adopted causal evidence"
   ],
   "exclusions": [
     "GPU execution",
@@ -26,6 +27,7 @@
     "owner-side ingestion of the validated feature_selection_envelope.v1",
     "inventory scheduler using one run-column process per unit",
     "real TRAIN inventory execution",
-    "one-time EURUSD 366-column PROFILE_ONLY campaign using retained terminals"
+    "one-time EURUSD 366-column PROFILE_ONLY campaign using retained terminals",
+    "warehouse ingestion of the composed final EURUSD feature_selection_envelope.v1"
   ]
 }
