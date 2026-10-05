@@ -3,8 +3,9 @@
     python -m causal_inference_provider.fs_causal_discovery pcmci --out OUT [--tau-max 6] [--pc-alpha 0.05] [--alpha 0.01]
 
 A screening comparator under declared assumptions, never extra identification evidence. For each candidate x
-the system is [x, r, H4] where r = the next-hour log return (lane-A target Y_s_1h at the decision row, realised
-strictly after x) and H4 = px.logret_24h, px.logret_120h, px.ewma_vol_24, px.ewma_vol_168 at the decision row.
+the system is [x, r, H] where r = the next-hour log return (lane-A target Y_s_1h at the decision row, realised
+strictly after x) and H = px.logret_24h, px.ewma_vol_24 at the decision row (two history series: the four-series
+pilot cost ~3 min per candidate; the scope is declared in every record).
 PCMCI+ (Runge 2020) with the linear partial-correlation CI test (analytic p), tau 0..tau_max, pc_alpha for the
 PC1 condition-selection phase, alpha_level for the reported links. Rows with any missing value are masked
 through tigramite's missing_flag. Lag-0 links x o-o r are time-ordered by construction (x is a bar-end value, r
@@ -32,7 +33,7 @@ from . import fs_causal as fc
 from . import fs_causal_batch as FB
 from . import ps3c
 
-H4 = ["px.logret_24h", "px.logret_120h", "px.ewma_vol_24", "px.ewma_vol_168"]
+H4 = ["px.logret_24h", "px.ewma_vol_24"]  # H2 in practice: the two-candidate pilot with four history series cost ~3 min per candidate on 71,734 rows
 MISSING_FLAG = 999.0
 
 
@@ -75,7 +76,7 @@ def pcmci_feature(x, r, H, *, tau_max, pc_alpha, alpha, var_names):
             "alpha_level": alpha, "variables": var_names, "links_x_to_r": links_x_r, "links_r_to_x": links_r_x,
             "verdict": ("PCMCI_PLUS_DIRECTED_LINK_X_TO_R" if directed else
                         "PCMCI_PLUS_UNDIRECTED_OR_CONFLICTING_LINK" if links_x_r else "PCMCI_PLUS_NO_LINK_X_TO_R"),
-            "scope": "screening comparator on the 1h-return series with H4 only; linear ParCorr; not identification evidence"}
+            "scope": "screening comparator on the 1h-return series with two history series (logret_24h, ewma_vol_24); linear ParCorr; not identification evidence"}
 
 
 def run_pcmci(out, tau_max=6, pc_alpha=0.05, alpha=0.01, max_features=None):
