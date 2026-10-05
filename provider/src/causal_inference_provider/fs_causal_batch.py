@@ -185,7 +185,7 @@ def run_feature(fid, meta, X, Y, folds, permutations, y_sd):
         ep, info = sets.get(hk, (None, na or {"reason": "NO_EPISODE_SET"}))
         if ep is None:
             r2 = {"state": "NOT_EVALUATED", "reasons": [info.get("reason", "NO_EPISODES")],
-                  "estimand": "ATE of a first available threshold crossing vs no crossing (not evaluated)"}
+                  "estimand": "ATE of a first available TRAIN-q80 crossing vs staying below, both from the pre-row band [q60,q80) (not evaluated)"}
             cell["rung2"] = fc.rung2_summary(r2, y_sd_train=y_sd.get(name))
             cell["rung2"]["nonlinear"] = None
             cell["rung3"] = fc.rung3_summary({"state": "NOT_EVALUATED", "label": "NONE", "reasons": [info.get("reason", "NO_EPISODES")]}, 0)

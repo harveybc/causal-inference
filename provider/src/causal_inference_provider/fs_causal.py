@@ -84,7 +84,7 @@ def assumption_evidence(fid, horizon_h, windows_disjoint, clock):
     """Traceability references for the four required assumptions (a reference is not a proof)."""
     return {
         "CONSISTENCY": (f"A is a deterministic function of the observed path of {fid} at rows t-1,t "
-                        "(fs_causal.crossing_episodes_h: cross of the TRAIN q80 threshold from below); one version "
+                        "(fs_causal.crossing_episodes_h: cross of the TRAIN q80 threshold from the pre-row band [q60,q80)); one version "
                         "of treatment; test_fs_causal::test_treatment_is_deterministic_function_of_observed_path"),
         "NO_INTERFERENCE_BETWEEN_EPISODES": (f"episode decision rows spaced >= max(24h, {horizon_h}h) so every "
                                              f"outcome window is disjoint; checked: windows_disjoint={windows_disjoint}; "
@@ -330,9 +330,12 @@ def vol_regime_dummies(vol_prev, train_vol):
 def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None, band=None, locators=CALENDAR_LOCATORS):
     """Horizon-aware crossing episodes: decision rows spaced >= max(24, horizon_h) hours so outcome windows are disjoint.
 
-    A=1: first available crossing of the TRAIN q80 threshold (row t-1 below, row t at/above).
+    Common support BY CONSTRUCTION: both arms start from the same pre-row band [q60, q80).
+    A=1: first available crossing of the TRAIN q80 threshold (row t-1 inside [q60, q80), row t at/above).
     A=0: rows that stayed below with the previous value inside [q60, q80). W from row t-1.
-    Controls may only be excluded by PAST crossings (never by a future one).
+    A crossing from far below the band has no control counterpart and is not an episode (the repaired gate
+    forbids trimming, so support is declared in the design, not recovered by dropping rows afterwards).
+    Controls may only be excluded by PAST crossings (never by a future one) and by symmetric spacing.
     """
     gap_h = max(24, int(horizon_h))
     x = X[fid].to_numpy(float)
@@ -347,7 +350,7 @@ def crossing_episodes_h(X, Y, fid, horizon_h, q=0.8, band_q=0.6, threshold=None,
     H_NS = 3600 * 10**9
     prev, now = x[:-1], x[1:]
     with np.errstate(invalid="ignore"):
-        cross = np.where((prev < thr) & (now >= thr))[0] + 1
+        cross = np.where((prev < thr) & (now >= thr) & (prev >= band))[0] + 1
         ctrl = np.where((prev < thr) & (now < thr) & (prev >= band))[0] + 1
     gap = (tn[1:] - tn[:-1]) / H_NS
     treated, last = [], None

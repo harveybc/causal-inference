@@ -284,6 +284,7 @@ def test_treatment_is_deterministic_function_of_observed_path():
     rows = X.index[X["t_decision_utc"].isin(ep["decision_time"])].to_numpy()
     treated = ep["A"].to_numpy() == 1
     assert np.all((x[rows[treated] - 1] < info["threshold"]) & (x[rows[treated]] >= info["threshold"]))
+    assert np.all(x[rows[treated] - 1] >= info["band"])  # common support by construction: same pre-row band as controls
     assert np.all((x[rows[~treated]] < info["threshold"]) & (x[rows[~treated] - 1] >= info["band"]))
     ep2, _ = fc.crossing_episodes_h(X, Y, "x", 24)
     assert ep2["A"].tolist() == ep["A"].tolist()  # deterministic, reproducible
