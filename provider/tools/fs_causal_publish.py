@@ -86,7 +86,15 @@ def main(argv=None):
         for tgt in plan["targets"]:
             cells = [final["per_state_per_target"][r].get(tgt, {}) for r in ("rung1", "rung2", "rung3")]
             lines.append(f"| {tgt} | " + " | ".join(f"{c.get('SUPPORTED', 0)}/{c.get('CONTRADICTED', 0)}/{c.get('NOT_IDENTIFIED', 0)}" for c in cells) + " |")
-        lines += ["", "## SUPPORTED / CONTRADICTED cells", ""]
+        ident = tab[tab.r2_estimate.notna()]
+        lines += ["", "## Findings the reader must not misread", "",
+                  f"- Rung 2 reached an identified estimate (repaired gate: declared DAG, support, overlap without trimming, balance <= 0.1, placebo battery, four evidenced assumptions) in **{len(ident)}** cells of {ident.feature_id.nunique()} features; "
+                  f"the smallest family-BH q among them is {ident.r2_q.min():.3g}, so none is SUPPORTED at FDR 0.05, and none is a precise null inside the 0.1 SD equivalence margin. An identified-but-not-significant effect is NOT_IDENTIFIED here, not a rejection.",
+                  f"- The TRAIN-only nonlinear confirmation (HistGradientBoosting AIPW, ps3c_review) failed the no-trim overlap screen in {int((ident.r2_nonlinear_state == 'OVERLAP_SCREEN_FAILED').sum())}/{len(ident)} identified cells: a boosted propensity leaves at least one episode outside [0.05, 0.95] on every real episode set, so under the frozen screen this confirmation can never agree. This is a structural property of that confirmation design, recorded for the auditor, not a finding about any feature.",
+                  f"- {int((tab.clock == 'ASSUMED').sum()) // len(plan['targets'])} candidates carry an ASSUMED availability clock (D+1 / D+2 macro and cross-asset daily series): the dossier contract makes rung 2 abstain by name (ASSUMED_PUBLICATION_CLOCK) for all of them until lane A measures a receipt clock. Their rung-1 association evidence stands.",
+                  f"- {int((tab.rung2_reason.fillna('').str.contains('KNOWN_IN_ADVANCE')).sum()) // len(plan['targets'])} calendar candidates are known in advance and are not observed interventions (NOT_APPLICABLE recorded inside NOT_IDENTIFIED).",
+                  "- Rung 1 is association given the pre-decision history only; its SUPPORTED cells are evidence of predictive relevance, never of causation.", "",
+                  "## SUPPORTED / CONTRADICTED cells", ""]
         sc = tab[(tab.rung1_state != "NOT_IDENTIFIED") | (tab.rung2_state != "NOT_IDENTIFIED") | (tab.rung3_state != "NOT_IDENTIFIED")]
         r2 = sc[sc.rung2_state != "NOT_IDENTIFIED"]
         lines += [f"Rung 2 (identified historical intervention; estimand: ATE of a first available TRAIN-q80 crossing vs staying below, both from the pre-row band [q60,q80), AIPW with declared W): {len(r2)} cells", "",
