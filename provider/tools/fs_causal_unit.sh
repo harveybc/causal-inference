@@ -14,7 +14,7 @@ systemd-run --user --unit="$UNIT" --description="FS-CAUSAL ladder + PCMCI+ drive
   -p Restart=on-failure -p RestartSec=120s \
   --setenv=FS_CAUSAL_ROOT="$ROOT" --setenv=FS_CAUSAL_CAP="$FS_CAUSAL_CAP" \
   --setenv=FS_CAUSAL_PEAK_EVIDENCE="${FS_CAUSAL_PEAK_EVIDENCE:-}" --setenv=FS_CAUSAL_PEAK_BYTES="${FS_CAUSAL_PEAK_BYTES:-}" \
-  --setenv=FS_CAUSAL_WALL="${FS_CAUSAL_WALL:-6h}" \
+  --setenv=FS_CAUSAL_WALL="${FS_CAUSAL_WALL:-6h}" --setenv=PATH="$PATH" \
   "$ROOT/code/provider/tools/fs_causal_driver.sh"
 sleep 2
 systemctl --user status "$UNIT.service" --no-pager | head -8

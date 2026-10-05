@@ -10,6 +10,9 @@ ROOT="${FS_CAUSAL_ROOT:-$HOME/.local/state/canonical_20261003/fs_causal}"
 RUN="$ROOT/run"
 PY="${FS_CAUSAL_PYTHON:-$HOME/.local/state/envs/fs_causal/bin/python}"
 CAP="${FS_CAUSAL_CAP:-2G}"
+CAP_PCMCI="${FS_CAUSAL_CAP_PCMCI:-$CAP}"   # stage-2 cap from its own pilot peak (defaults to the ladder cap)
+PEAK_EV_PCMCI="${FS_CAUSAL_PEAK_EVIDENCE_PCMCI:-}"
+PEAK_BYTES_PCMCI="${FS_CAUSAL_PEAK_BYTES_PCMCI:-}"
 WALL="${FS_CAUSAL_WALL:-6h}"
 PEAK_EV="${FS_CAUSAL_PEAK_EVIDENCE:-}"
 PEAK_BYTES="${FS_CAUSAL_PEAK_BYTES:-}"
@@ -19,11 +22,13 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export CUDA_VISIBLE_DEVICES=""
 MAXFAIL=6
 
-run_capped() {  # name, command...
+run_capped() {  # name, command...   (cap and evidence chosen by stage: names starting fs-causal-pcmci use stage 2)
   local name=$1; shift
+  local cap=$CAP ev=$PEAK_EV pb=$PEAK_BYTES
+  case "$name" in fs-causal-pcmci*) cap=$CAP_PCMCI; ev=$PEAK_EV_PCMCI; pb=$PEAK_BYTES_PCMCI ;; esac
   local extra=()
-  if [ -n "$PEAK_EV" ] && [ -n "$PEAK_BYTES" ]; then extra=(-E "$PEAK_EV" -P "$PEAK_BYTES"); fi
-  "$HOME/.local/bin/crispdm-run" -m "$CAP" -t "$WALL" -n "$name" -q -W 7200 "${extra[@]}" -- "$@"
+  if [ -n "$ev" ] && [ -n "$pb" ]; then extra=(-E "$ev" -P "$pb"); fi
+  "$HOME/.local/bin/crispdm-run" -m "$cap" -t "$WALL" -n "$name" -q -W 7200 "${extra[@]}" -- "$@"
 }
 
 log() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
@@ -55,8 +60,10 @@ PY
   fi
   if [ "$fails" -ge "$MAXFAIL" ]; then log "too many consecutive failures; marking DRIVER_FAILED"; echo "$(date -u +%FT%TZ) stage1" > "$RUN/DRIVER_FAILED"; exit 1; fi
 done
-# ---- stage 2: PCMCI+ comparator
+# ---- stage 2: PCMCI+ comparator (needs its own measured cap; without one it waits for the operator to set it)
 fails=0
+until [ -n "${FS_CAUSAL_CAP_PCMCI:-}" ] || [ -f "$ROOT/pcmci_cap.env" ]; do log "stage 2 waits for pcmci_cap.env (measured PCMCI+ pilot peak)"; sleep 300; done
+[ -f "$ROOT/pcmci_cap.env" ] && . "$ROOT/pcmci_cap.env" && CAP_PCMCI=$FS_CAUSAL_CAP_PCMCI && PEAK_EV_PCMCI=${FS_CAUSAL_PEAK_EVIDENCE_PCMCI:-} && PEAK_BYTES_PCMCI=${FS_CAUSAL_PEAK_BYTES_PCMCI:-}
 until [ -f "$RUN/READY_PCMCI" ]; do
   if run_capped fs-causal-pcmci "$PY" -m causal_inference_provider.fs_causal_discovery pcmci --out "$RUN" >> "$LOG" 2>&1; then
     log "pcmci pass finished"; fails=0
