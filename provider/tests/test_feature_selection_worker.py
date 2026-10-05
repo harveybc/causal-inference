@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pandas as pd
+import numpy as np
 import pytest
 
 from causal_inference_provider import feature_selection_worker as worker
+
+
+WAREHOUSE_CONTRACT = Path("/home/harveybc/Documents/GitHub/data-warehouse/data_warehouse_service/feature_selection.py")
+WAREHOUSE_CONTRACT_SHA256 = "91fcb4fde495239a4e0a21d3a39f0b66d50bd0a5df4865db7bd720b454f5f75a"
+
+
+def _warehouse_validator():
+    assert _sha(WAREHOUSE_CONTRACT) == WAREHOUSE_CONTRACT_SHA256
+    spec = importlib.util.spec_from_file_location("warehouse_feature_selection_50bddf3", WAREHOUSE_CONTRACT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.validate_envelope
 
 
 def _sha(path: Path) -> str:
@@ -62,6 +79,12 @@ def _write_unit(tmp_path: Path, *, feature: str = "signal", missing_target: bool
         },
         "folds": [{"train_rows": [0, 2], "validation_rows": [2, 3]}],
         "permutations": 2,
+        "run": {
+            "run_id": "phase1-fixture",
+            "campaign_sha256": "a" * 64,
+            "inventory_sha256": "b" * 64,
+            "created_at": "2026-10-05T12:00:00Z"
+        },
         "output_dir": str(tmp_path / "output"),
     }
     path = tmp_path / f"{feature}.json"
@@ -105,8 +128,19 @@ def test_run_column_is_idempotent_and_profiles_missing_dates(tmp_path, monkeypat
     first_bytes = (terminal.read_bytes(), envelope.read_bytes())
     assert first["status"] == "COMPLETED"
     assert first["global_state"] == "AWAITING_INVENTORY_FINALIZATION"
-    assert first["profile"]["sampling"]["missing_timestamps"] == 1
-    assert json.loads(envelope.read_text())["schema"] == "feature_selection_envelope.v1"
+    profile_cells = {cell["metric"]: cell for cell in first["profile"]["cells"]}
+    assert profile_cells["timestamp_gaps"]["value"]["missing_timestamp_count"] == 1
+    document = json.loads(envelope.read_text())
+    validated = _warehouse_validator()(document)
+    assert validated == document
+    assert set(document["rows"]) == {
+        "sampling_quality", "variable_profiles", "information_metrics", "pair_relations",
+        "causal_evidence", "selection_decisions",
+    }
+    assert document["rows"]["sampling_quality"]
+    assert document["rows"]["variable_profiles"]
+    assert document["rows"]["causal_evidence"]
+    assert document["rows"]["selection_decisions"] == []
 
     second = worker.run_column(config)
     assert second["status"] == "REPLAY"
@@ -147,7 +181,7 @@ def test_missing_target_is_explicit_and_never_calls_scientific_runner(tmp_path, 
     monkeypatch.setattr(worker.FB, "run_feature", forbidden)
     result = worker.run_column(config)
     cells = [json.loads(line) for line in Path(result["raw_cells_path"]).read_text().splitlines()]
-    assert result["status"] == "NOT_AVAILABLE"
+    assert result["status"] == "UNAVAILABLE"
     assert cells[0]["rung1"]["state"] == "NOT_IDENTIFIED"
     assert cells[0]["rung1"]["abstention_reason"] == "TARGET_COLUMN_NOT_AVAILABLE"
 
@@ -164,8 +198,34 @@ def test_missing_context_is_explicit(tmp_path, monkeypatch):
     monkeypatch.setattr(worker.FB, "run_feature", forbidden)
     result = worker.run_column(config)
     cells = [json.loads(line) for line in Path(result["raw_cells_path"]).read_text().splitlines()]
-    assert result["status"] == "NOT_AVAILABLE"
+    assert result["status"] == "UNAVAILABLE"
     assert cells[0]["rung2"]["abstention_reason"] == "CONTEXT_COLUMN_NOT_AVAILABLE"
+
+
+def test_ps1_has_established_families_frequency_aware_lags_and_no_silent_gap_fill():
+    frame = pd.DataFrame({
+        "time": pd.to_datetime([
+            "2024-01-01T00:00:00Z", "2024-01-01T04:00:00Z", "2024-01-01T12:00:00Z",
+            "2024-01-01T16:00:00Z", "2024-01-01T20:00:00Z", "2024-01-02T00:00:00Z",
+        ]),
+        "signal": [1.0, 1.1, 20.0, 1.2, 1.3, 1.4],
+    })
+    profile = worker.profile_series(frame, "time", "signal", "4h", "24x7")
+    by_name = {cell["metric"]: cell for cell in profile["cells"]}
+    required = {
+        "missingness", "constant", "scale_tails", "volatility", "acf", "pacf", "trend",
+        "adf", "kpss", "seasonality", "spectrum", "information_entropy", "timestamp_gaps",
+        "outliers", "cost",
+    }
+    assert required <= set(by_name)
+    assert all(cell["state"] in {"MEASURED", "FAILED", "NOT_APPLICABLE", "PENDING"}
+               for cell in profile["cells"])
+    assert by_name["timestamp_gaps"]["value"]["missing_timestamp_count"] == 1
+    assert by_name["acf"]["value"]["lags"]["24h"]["rows"] == 6
+    assert by_name["acf"]["value"]["lags"]["1h"]["state"] == "NOT_APPLICABLE"
+    assert "1 row = 1 market hour" not in json.dumps(profile)
+    assert by_name["spectrum"]["value"]["diagnostics"]["zero_filled"] is False
+    assert by_name["spectrum"]["value"]["diagnostics"]["gaps_compressed"] is False
 
 
 def test_inventory_finalizer_requires_every_terminal(tmp_path, monkeypatch):
@@ -179,6 +239,8 @@ def test_inventory_finalizer_requires_every_terminal(tmp_path, monkeypatch):
             {"unit_id": "one", "terminal_path": first["terminal_path"]},
             {"unit_id": "two", "terminal_path": str(tmp_path / "missing" / "terminal.json")},
         ],
+        "run": {"run_id": "final-missing", "campaign_sha256": "a" * 64,
+                "created_at": "2026-10-05T13:00:00Z"},
         "output_dir": str(tmp_path / "final"),
     }
     manifest = tmp_path / "inventory.json"
@@ -198,6 +260,8 @@ def test_inventory_finalizer_reuses_global_finalize_and_replays(tmp_path, monkey
         "units": [
             {"unit_id": item["unit_id"], "terminal_path": item["terminal_path"]} for item in completed
         ],
+        "run": {"run_id": "final-fixture", "campaign_sha256": "a" * 64,
+                "created_at": "2026-10-05T13:00:00Z"},
         "output_dir": str(tmp_path / "final"),
     }
     manifest = tmp_path / "inventory.json"
@@ -207,7 +271,11 @@ def test_inventory_finalizer_reuses_global_finalize_and_replays(tmp_path, monkey
     def fake_finalize(out):
         calls.append(out)
         causal = Path(out) / "causal_evidence.jsonl"
-        causal.write_text("{}\n", encoding="utf-8")
+        raw = json.loads((Path(out) / "unit_00000" / "cells.jsonl").read_text().splitlines()[0])
+        for rung in ("rung1", "rung2", "rung3"):
+            raw[rung]["state"] = "NOT_IDENTIFIED"
+            raw[rung]["abstention_reason"] = raw[rung].get("abstention_reason") or "TEST_NOT_IDENTIFIED"
+        causal.write_text(json.dumps(raw) + "\n", encoding="utf-8")
         summary = {"schema": "fs_causal_final_summary.v1", "cells": 2, "per_state": {}}
         (Path(out) / "final_summary.json").write_text(json.dumps(summary), encoding="utf-8")
         return summary
@@ -220,6 +288,9 @@ def test_inventory_finalizer_reuses_global_finalize_and_replays(tmp_path, monkey
     assert second["status"] == "REPLAY"
     assert len(calls) == 1
     assert _sha(Path(first["terminal_path"])) == digest
+    final_envelope = json.loads(Path(first["envelope_path"]).read_text())
+    _warehouse_validator()(final_envelope)
+    assert final_envelope["rows"]["selection_decisions"]
 
 
 def test_real_global_finalizer_handles_explicit_unavailable_cells(tmp_path):
@@ -231,10 +302,13 @@ def test_real_global_finalizer_handles_explicit_unavailable_cells(tmp_path):
             {
                 "schema": "feature_selection_inventory.v1",
                 "inventory_id": "unavailable-fixture",
-                "units": [
-                    {"unit_id": item["unit_id"], "terminal_path": item["terminal_path"]} for item in completed
-                ],
-                "output_dir": str(tmp_path / "final"),
+                    "units": [
+                    {"unit_id": item["unit_id"], "terminal_path": item["terminal_path"],
+                     "disposition": "UNAVAILABLE"} for item in completed
+                    ],
+                    "run": {"run_id": "final-unavailable", "campaign_sha256": "a" * 64,
+                            "created_at": "2026-10-05T13:00:00Z"},
+                    "output_dir": str(tmp_path / "final"),
             }
         ),
         encoding="utf-8",
@@ -245,6 +319,28 @@ def test_real_global_finalizer_handles_explicit_unavailable_cells(tmp_path):
     assert len(evidence) == 2
     assert all(cell["rung1"]["state"] == "NOT_IDENTIFIED" for cell in evidence)
     assert all(cell["rung1"]["abstention_reason"] == "TARGET_COLUMN_NOT_AVAILABLE" for cell in evidence)
+    _warehouse_validator()(json.loads(Path(result["envelope_path"]).read_text()))
+
+
+@pytest.mark.parametrize("terminal_state", ["FAILED", "NOT_APPLICABLE"])
+def test_finalizer_rejects_noncompleted_terminal_without_explicit_disposition(tmp_path, terminal_state):
+    config = _write_unit(tmp_path / "one", feature="one", missing_target=True)
+    item = worker.run_column(config)
+    terminal_path = Path(item["terminal_path"])
+    terminal = json.loads(terminal_path.read_text())
+    terminal["status"] = terminal_state
+    terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
+    manifest = tmp_path / "inventory.json"
+    manifest.write_text(json.dumps({
+        "schema": "feature_selection_inventory.v1",
+        "inventory_id": "refuse-unavailable",
+        "units": [{"unit_id": "one", "terminal_path": item["terminal_path"]}],
+        "run": {"run_id": "final-refusal", "campaign_sha256": "a" * 64,
+                "created_at": "2026-10-05T13:00:00Z"},
+        "output_dir": str(tmp_path / "final"),
+    }), encoding="utf-8")
+    with pytest.raises(worker.IncompleteInventory, match="explicit UNAVAILABLE disposition"):
+        worker.finalize_inventory(manifest)
 
 
 def test_eth_and_eurusd_target_definitions_are_config_driven(tmp_path, monkeypatch):
@@ -270,3 +366,127 @@ def test_eth_and_eurusd_target_definitions_are_config_driven(tmp_path, monkeypat
     worker.run_column(eur)
     assert seen[0] == [("eth_return_1h", "return", "short", 1)]
     assert seen[1] == [("custom_eurusd_target", "custom", "custom_head", 7)]
+
+
+def test_historical_causal_defaults_equal_their_explicit_declarations():
+    """Generic target-pack parameters must not move the historical EURUSD path."""
+    rng = np.random.default_rng(1729)
+    count = 1200
+    candidate = np.zeros(count)
+    for index in range(1, count):
+        candidate[index] = 0.85 * candidate[index - 1] + rng.normal()
+    X = pd.DataFrame({
+        "t_decision_utc": pd.date_range("2020-01-01", periods=count, freq="h", tz="UTC"),
+        "candidate": candidate,
+    })
+    for name in set(worker.fc.H_BASE + worker.fc.PRE_RETURNS + worker.fc.CALENDAR_LOCATORS):
+        X[name] = rng.normal(size=count)
+    Y = pd.DataFrame({name: rng.normal(size=count) for name, *_ in worker.fc.TARGETS})
+
+    historical, historical_info = worker.fc.crossing_episodes_h(X, Y, "candidate", 24)
+    explicit, explicit_info = worker.fc.crossing_episodes_h(
+        X, Y, "candidate", 24,
+        locators=worker.fc.CALENDAR_LOCATORS,
+        targets=worker.fc.TARGETS,
+        history_columns=worker.fc.H_BASE,
+        pre_return_columns=worker.fc.PRE_RETURNS,
+        mediator_target="Y_s_1h",
+        volatility_regime_column="px.ewma_vol_168",
+        placebo_outcome_column="px.logret_24h",
+    )
+    pd.testing.assert_frame_equal(historical, explicit, check_exact=True)
+    assert historical_info == explicit_info
+
+
+def test_stdio_worker_resolves_host_local_deployment_and_emits_one_json(tmp_path):
+    unit_config = json.loads(_write_unit(tmp_path / "data").read_text())
+    deployment = {
+        "schema": "phase1.column_worker_deployment.v1",
+        "version": "fixture-1",
+        "output_root": str(tmp_path / "worker-output"),
+        "resources": {
+            "fixture-signal": {
+                "resource_id": unit_config["dataset"]["resource_id"],
+                "path": unit_config["dataset"]["path"],
+                "format": "csv",
+                "timestamp_column": "time",
+                "frequency": "1h",
+                "calendar": "24x7",
+            }
+        },
+        "populations": {
+            "ETH": {
+                "target_pack_id": "eth-short-long-v1",
+                "resource_key_field": "resource_key",
+                "feature_column_field": "feature_column",
+                "feature_family_field": "family",
+                "feature_clock_field": "clock",
+                "target_pack": unit_config["target_pack"],
+                "folds": unit_config["folds"],
+                "permutations": 2,
+                "campaign_sha256": "a" * 64,
+                "created_at": "2026-10-05T12:00:00Z",
+            }
+        },
+    }
+    deployment["deployment_sha256"] = worker.EW.digest(deployment)
+    deployment_path = tmp_path / "deployment.json"
+    deployment_path.write_text(json.dumps(deployment), encoding="utf-8")
+    inventory_row = {
+        "feature_id": "signal",
+        "feature_column": "signal",
+        "resource_key": "fixture-signal",
+        "family": "fixture",
+        "clock": "OBSERVED_AT_DECISION",
+    }
+    request = {
+        "schema": "phase1.column_request.v1",
+        "feature_id": "signal",
+        "feature_key": "c" * 64,
+        "population_id": "ETH",
+        "target_pack": "eth-short-long-v1",
+        "plan_sha256": "d" * 64,
+        "inventory_sha256": "e" * 64,
+        "inventory_row_sha256": worker.EW.digest(inventory_row),
+        "inventory_row": inventory_row,
+        "attempt_number": 1,
+    }
+    request["request_sha256"] = worker.EW.digest(request)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "causal_inference_provider.feature_selection_worker",
+         "--stdio", "--deployment-manifest", str(deployment_path)],
+        input=json.dumps(request), text=True, capture_output=True, check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.count("\n") == 1
+    result = json.loads(completed.stdout)
+    assert result["schema"] == "phase1.column_result.v1"
+    assert result["feature_id"] == "signal"
+    assert result["state"] == "COMPLETED"
+    assert result["request_sha256"] == request["request_sha256"]
+    _warehouse_validator()(result["envelope"])
+    assert "dataset_path" not in request["inventory_row"]
+
+    replay = subprocess.run(
+        completed.args, input=json.dumps(request), text=True, capture_output=True, check=False,
+    )
+    assert replay.returncode == 0
+    assert replay.stdout == completed.stdout
+
+    deployment.pop("deployment_sha256")
+    deployment["populations"]["ETH"]["target_pack"]["path"] = str(tmp_path / "absent-target.csv")
+    deployment["deployment_sha256"] = worker.EW.digest(deployment)
+    deployment_path.write_text(json.dumps(deployment), encoding="utf-8")
+    request.pop("request_sha256")
+    request["feature_key"] = "f" * 64
+    request["attempt_number"] = 2
+    request["request_sha256"] = worker.EW.digest(request)
+    unavailable = subprocess.run(
+        completed.args, input=json.dumps(request), text=True, capture_output=True, check=False,
+    )
+    assert unavailable.returncode == 0
+    unavailable_result = json.loads(unavailable.stdout)
+    assert unavailable_result["state"] == "UNAVAILABLE"
+    assert unavailable_result["state"] != "NOT_APPLICABLE"

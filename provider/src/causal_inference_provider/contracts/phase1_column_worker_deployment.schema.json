@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase1.column_worker_deployment.v1",
+  "title": "Host-local phase-1 column worker deployment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "output_root", "resources", "populations", "deployment_sha256"],
+  "properties": {
+    "schema": {"const": "phase1.column_worker_deployment.v1"},
+    "version": {"type": "string", "minLength": 1},
+    "output_root": {"type": "string", "minLength": 1},
+    "resources": {"type": "object", "minProperties": 1},
+    "populations": {"type": "object", "minProperties": 1},
+    "deployment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -4,11 +4,12 @@
   "current_stage": "integration_verification_complete",
   "requirements": [
     "typed config-driven per-column TRAIN worker",
-    "PS1 profile computation or accepted typed payload",
+    "established PS1 families with frequency-aware lags and explicit gap handling",
     "raw three-rung causal evidence via existing implementation",
-    "atomic immutable terminal and typed offline outbox",
+    "atomic immutable terminal and exact warehouse-owned offline envelope",
     "complete-inventory global BH/FDR finalization",
-    "EURUSD and ETH target packs supplied by configuration"
+    "EURUSD and ETH target packs supplied by configuration",
+    "stdio-json-v1 orchestration boundary resolved through a versioned host-local deployment"
   ],
   "exclusions": [
     "GPU execution",
@@ -20,7 +21,8 @@
   "governing_tests": "provider/tests/test_feature_selection_worker.py",
   "traceability": "docs/PHASE1_FEATURE_SELECTION_TRACEABILITY.md",
   "next_allowed_actions": [
-    "owner-side warehouse consumer for feature_selection_envelope.v1",
+    "orchestrator deployment with a sealed host-local deployment manifest",
+    "owner-side ingestion of the validated feature_selection_envelope.v1",
     "inventory scheduler using one run-column process per unit",
     "real TRAIN inventory execution"
   ]

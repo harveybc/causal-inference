@@ -4,7 +4,7 @@
   "title": "Complete phase-1 feature inventory",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "inventory_id", "units", "output_dir"],
+  "required": ["schema", "inventory_id", "units", "run", "output_dir"],
   "properties": {
     "schema": {"const": "feature_selection_inventory.v1"},
     "inventory_id": {"type": "string", "minLength": 1},
@@ -17,8 +17,19 @@
         "required": ["unit_id", "terminal_path"],
         "properties": {
           "unit_id": {"type": "string", "minLength": 1},
-          "terminal_path": {"type": "string", "minLength": 1}
+          "terminal_path": {"type": "string", "minLength": 1},
+          "disposition": {"enum": ["UNAVAILABLE"]}
         }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "campaign_sha256", "created_at"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "campaign_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_at": {"type": "string", "format": "date-time"}
       }
     },
     "output_dir": {"type": "string", "minLength": 1}

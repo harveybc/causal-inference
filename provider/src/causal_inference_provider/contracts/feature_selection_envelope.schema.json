@@ -1,22 +1,46 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "feature_selection_envelope.v1",
-  "title": "Warehouse outbox envelope for one phase-1 feature",
+  "title": "Warehouse-owned phase-1 feature-selection envelope",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "unit_id", "unit_key", "identity_sha256", "split", "target_pack", "dataset",
-               "status", "causal_state", "artifacts_sha256", "metrics"],
+  "required": ["schema_version", "run", "rows", "envelope_sha256"],
   "properties": {
-    "schema": {"const": "feature_selection_envelope.v1"},
-    "unit_id": {"type": "string", "minLength": 1},
-    "unit_key": {"type": "string", "minLength": 1},
-    "identity_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "split": {"const": "TRAIN"},
-    "target_pack": {"enum": ["EURUSD", "ETH"]},
-    "dataset": {"type": "object"},
-    "status": {"enum": ["COMPLETED", "NOT_AVAILABLE", "NOT_APPLICABLE"]},
-    "causal_state": {"const": "RAW_AWAITING_GLOBAL_BH_FDR"},
-    "artifacts_sha256": {"type": "object"},
-    "metrics": {"type": "object"}
+    "schema_version": {"const": "feature_selection_envelope.v1"},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "campaign_sha256", "code_sha256", "input_sha256", "inventory_sha256", "created_at"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "campaign_sha256": {"$ref": "#/$defs/sha256"},
+        "code_sha256": {"$ref": "#/$defs/sha256"},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "rows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sampling_quality", "variable_profiles", "information_metrics", "pair_relations", "causal_evidence", "selection_decisions"],
+      "properties": {
+        "sampling_quality": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+        "variable_profiles": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+        "information_metrics": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+        "pair_relations": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+        "causal_evidence": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+        "selection_decisions": {"type": "array", "items": {"$ref": "#/$defs/row"}}
+      }
+    },
+    "envelope_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "row": {
+      "type": "object",
+      "required": ["row_sha256"],
+      "properties": {"row_sha256": {"$ref": "#/$defs/sha256"}}
+    }
   }
 }

@@ -4,7 +4,7 @@
   "title": "Phase-1 per-column feature-selection unit",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "unit_id", "split", "dataset", "feature", "target_pack", "folds", "output_dir"],
+  "required": ["schema", "unit_id", "split", "dataset", "feature", "target_pack", "folds", "run", "output_dir"],
   "properties": {
     "schema": {"const": "feature_selection_unit.v1"},
     "unit_id": {"type": "string", "minLength": 1},
@@ -74,6 +74,17 @@
       }
     },
     "train_period": {"type": "array", "items": {"type": ["string", "null"]}, "minItems": 2, "maxItems": 2},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "campaign_sha256", "inventory_sha256", "created_at"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "campaign_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    },
     "ps1_profile": {"type": "object"},
     "permutations": {"type": "integer", "minimum": 1},
     "output_dir": {"type": "string", "minLength": 1}
