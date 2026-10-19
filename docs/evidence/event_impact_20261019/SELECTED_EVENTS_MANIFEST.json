@@ -1,0 +1,305 @@
+{
+ "decision_start": "2018-01-01",
+ "frozen": true,
+ "inputs": {
+  "bars_read": 58259,
+  "calendar_rows_read": 117116,
+  "calendar_sha256": "5172b322bfaf7bb568a0bb37cc2f806e8bd18ed51c5703c1098c8609a6249383",
+  "decision_start": "2018-01-01",
+  "hourly_sha256": "62b298ef2857edf567e32473579b97793eed4862f7a83f7c455918f955bc700c",
+  "licensing": "Investing.com export: RESEARCH ONLY, no rows are written here",
+  "period": [
+   "2011-01-01",
+   "2021-01-01"
+  ],
+  "test_boundary_never_read": "2025-01-01"
+ },
+ "labels": [
+  "DESCRIPTIVE",
+  "FIXTURE",
+  "CLOCK_UNVERIFIED",
+  "FIXTURE_RESEARCH_ONLY"
+ ],
+ "ranking": [
+  {
+   "bh_pass": false,
+   "family": "United States | Nonfarm Payrolls",
+   "n_decision": 28,
+   "n_train": 75,
+   "oos_effect_per_unit_risk": 0.47886534360143584,
+   "oos_mean_log_return": 0.0010805462358522459,
+   "oos_p": 0.011279537378706905,
+   "oos_std": 0.0022564719921590207,
+   "oos_t": 2.5339172213137893,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.00247957083233575,
+   "train_slope_p": 8.228487903849668e-05,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 1.1574914732192774,
+    "half_life_hours": 12.792806579974345
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | ADP Nonfarm Employment Change",
+   "n_decision": 28,
+   "n_train": 76,
+   "oos_effect_per_unit_risk": 0.36050873535260775,
+   "oos_mean_log_return": 0.0006802495910031393,
+   "oos_p": 0.056438677402017134,
+   "oos_std": 0.0018869156952266307,
+   "oos_t": 1.9076329184187992,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0009292241485645366,
+   "train_slope_p": 0.060852764871728304,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 0.9069207238798089,
+    "half_life_hours": 0.4853887560137606
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "Germany | German Manufacturing PMI",
+   "n_decision": 56,
+   "n_train": 155,
+   "oos_effect_per_unit_risk": 0.3028634926599384,
+   "oos_mean_log_return": 0.0007960426336759124,
+   "oos_p": 0.02342550593264736,
+   "oos_std": 0.002628387550723144,
+   "oos_t": 2.2664228489904277,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": 1.0,
+   "train_slope": 0.0011804097932727922,
+   "train_slope_p": 3.2384287775855114e-06,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 1.7686260141601924,
+    "half_life_hours": 0.25
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | Core Retail Sales",
+   "n_decision": 28,
+   "n_train": 75,
+   "oos_effect_per_unit_risk": 0.17421536427856157,
+   "oos_mean_log_return": 0.0005404077697219151,
+   "oos_p": 0.35660105454510704,
+   "oos_std": 0.003101952413667892,
+   "oos_t": 0.921861056895199,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.000999288338158523,
+   "train_slope_p": 0.005553332164632607,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 1.3802995229707449,
+    "half_life_hours": 0.7327254082358556
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | CPI",
+   "n_decision": 54,
+   "n_train": 142,
+   "oos_effect_per_unit_risk": 0.13771807712131304,
+   "oos_mean_log_return": 0.0003664039755017668,
+   "oos_p": 0.31152990038799677,
+   "oos_std": 0.002660536533479254,
+   "oos_t": 1.012017051913437,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.00033020489882756697,
+   "train_slope_p": 0.25106279228882755,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 0.5968160420445363,
+    "half_life_hours": 1.7083644594227012
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | ISM Manufacturing PMI",
+   "n_decision": 28,
+   "n_train": 76,
+   "oos_effect_per_unit_risk": 0.11906254563650466,
+   "oos_mean_log_return": 0.000348806773419886,
+   "oos_p": 0.5286816478822269,
+   "oos_std": 0.0029296095724744993,
+   "oos_t": 0.6300197724329397,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0008161208037377268,
+   "train_slope_p": 0.010354704130741021,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 0.5981926352954134,
+    "half_life_hours": 2.3533541127619926
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | Core CPI",
+   "n_decision": 54,
+   "n_train": 142,
+   "oos_effect_per_unit_risk": 0.11117013432458951,
+   "oos_mean_log_return": 0.0003192683627028371,
+   "oos_p": 0.4139682545377372,
+   "oos_std": 0.002871889690900722,
+   "oos_t": 0.8169303111957303,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0007286096108044522,
+   "train_slope_p": 0.009799621397985625,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 0.5968160420445363,
+    "half_life_hours": 1.7083644594227012
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | Retail Sales",
+   "n_decision": 28,
+   "n_train": 75,
+   "oos_effect_per_unit_risk": 0.08301375349897014,
+   "oos_mean_log_return": 0.0002679078164223439,
+   "oos_p": 0.6604677245007258,
+   "oos_std": 0.003227270242944352,
+   "oos_t": 0.43926749431258594,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0005562628491223549,
+   "train_slope_p": 0.21443064294180836,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 1.3802995229707449,
+    "half_life_hours": 0.7327254082358556
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | Unemployment Rate",
+   "n_decision": 28,
+   "n_train": 75,
+   "oos_effect_per_unit_risk": 0.0625193128530532,
+   "oos_mean_log_return": 0.00011248703285558752,
+   "oos_p": 0.7407796160014726,
+   "oos_std": 0.0017992365514313882,
+   "oos_t": 0.33082110789564567,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0009183387116130743,
+   "train_slope_p": 0.2959639987105893,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": true,
+    "excess_over_control": 1.1574914732192774,
+    "half_life_hours": 12.792806579974345
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "Germany | German Ifo Business Climate Index",
+   "n_decision": 29,
+   "n_train": 76,
+   "oos_effect_per_unit_risk": 0.03998180356464588,
+   "oos_mean_log_return": 0.00010168865532443738,
+   "oos_p": 0.8295267238777655,
+   "oos_std": 0.002543373391348361,
+   "oos_t": 0.21530860148209585,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": 1.0,
+   "train_slope": 0.0001684005311899786,
+   "train_slope_p": 0.6404261306046852,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": false,
+    "excess_over_control": 0.23061489293834225,
+    "half_life_hours": 21.16226556781435
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "Euro Zone | CPI",
+   "n_decision": 85,
+   "n_train": 212,
+   "oos_effect_per_unit_risk": -0.03167350667889382,
+   "oos_mean_log_return": -3.9347658648886924e-05,
+   "oos_p": 0.7702749236096333,
+   "oos_std": 0.0012422893065739042,
+   "oos_t": -0.29201530294442474,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.00014560168716808234,
+   "train_slope_p": 0.6950472153254188,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": false,
+    "excess_over_control": -0.31901944369996715,
+    "half_life_hours": 24.000000000000004
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "United States | GDP",
+   "n_decision": 27,
+   "n_train": 76,
+   "oos_effect_per_unit_risk": -0.07518229758931602,
+   "oos_mean_log_return": -0.00016388555051143655,
+   "oos_p": 0.6960495467092351,
+   "oos_std": 0.0021798422735982725,
+   "oos_t": -0.39065867776337543,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0004906144007630589,
+   "train_slope_p": 0.09810938420581494,
+   "volatility_impulse_oos": {
+    "status": "TOO_FEW_EVENTS"
+   }
+  },
+  {
+   "bh_pass": false,
+   "family": "Germany | German ZEW Economic Sentiment",
+   "n_decision": 28,
+   "n_train": 75,
+   "oos_effect_per_unit_risk": -0.35344327449769825,
+   "oos_mean_log_return": -0.0011123505692099862,
+   "oos_p": 0.06144966261371443,
+   "oos_std": 0.003147182729083816,
+   "oos_t": -1.8702460137784944,
+   "selected": false,
+   "status": "OK",
+   "trade_direction": -1.0,
+   "train_slope": -0.0004893407898456977,
+   "train_slope_p": 0.10280021511569748,
+   "volatility_impulse_oos": {
+    "ci_excludes_zero": false,
+    "excess_over_control": 0.3090125973004787,
+    "half_life_hours": 2.300123125389941
+   }
+  },
+  {
+   "family": "United States | Fed Interest Rate Decision",
+   "n_decision": 0,
+   "n_train": 0,
+   "status": "TOO_FEW_EVENTS"
+  }
+ ],
+ "run_sha256": "b4d5f81c7f35f4c1085bf4c123c87b382464925319d3f905cbc808dddc6698bc",
+ "schema": "causal-inference.selected_events.v1",
+ "selected": []
+}

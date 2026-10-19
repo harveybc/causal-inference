@@ -30,3 +30,11 @@ tqdm==4.70.1
 typing-extensions==4.16.0
 tzdata==2026.4
 wrapt==2.4.1
+# [event] extra, observed 2026-10-19 in the same environment (figures of provider/tools/event_impact_fixture_run.py)
+contourpy==1.4.0
+cycler==0.12.1
+fonttools==4.67.0
+kiwisolver==1.5.1
+matplotlib==3.9.2
+pillow==13.0.0
+pyparsing==3.3.3

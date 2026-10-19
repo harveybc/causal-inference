@@ -24,6 +24,9 @@ fit = [
 
 test = ["pytest>=8,<9"]
 
+# the event-impact fixture run's figures (provider/tools/event_impact_fixture_run.py); CPU-only wheels
+event = ["matplotlib==3.9.2"]
+
 [project.entry-points."m5phet.providers"]
 causal_inference = "causal_inference_provider.chat:M5PHETCausalProvider"
 
