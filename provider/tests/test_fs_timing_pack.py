@@ -82,3 +82,41 @@ def test_tp06_matched_control_contrast_recovers_a_planted_excess_and_is_null_on_
     assert rec["state"] == "ESTIMATED" and rec["excess_pivot_rate"] > 0.2 and rec["significant"]
     null = T.matched_control_contrast(bars, rng.normal(size=n), base.astype(float), k=2, seed=1)
     assert null["state"] == "ESTIMATED" and abs(null["excess_pivot_rate"]) < 0.08
+
+
+def test_tp07_mixed_ci_detects_the_positive_control_and_not_the_negatives():
+    pytest.importorskip("tigramite")
+    rng = np.random.default_rng(5)
+    n = 4000
+    y = rng.choice([0.0, 1.0, 2.0], size=n, p=[0.6, 0.2, 0.2])
+    X = pd.DataFrame({"real": rng.normal(size=n), "px.rv_24": np.abs(rng.normal(size=n))})
+    rep = T.mixed_ci_stage(X, y, k=2, history=["px.rv_24"], target_name="timing_pivot_k2", reference="real",
+                           halves=(slice(0, n // 2), slice(n // 2, n)))
+    assert rep["evidence_label"] == "CONDITIONAL_PREDICTIVE_ASSOCIATION"
+    assert rep["control_verdicts"]["POSITIVE_CONTROL_LABEL_LEAK_LAG1"] in ("LAGGED_PARENT", "LAG0_TIME_ORDERED_LINK")
+    assert not rep["controls"]["NEGATIVE_CONTROL_NOISE"]["significant_at_alpha"]
+    assert rep["controls_behave"] is True
+    rec = rep["records"]["real"]
+    assert rec["data_type"][1] == 1 and rec["data_type"][0] == 0      # 3-class label typed discrete, candidate continuous
+    assert set(rep["temporal_resampling"]) >= {"real", "NEGATIVE_CONTROL_NOISE"}
+
+
+def test_tp08_mixed_ci_types_a_binary_candidate_as_discrete():
+    pytest.importorskip("tigramite")
+    rng = np.random.default_rng(6)
+    n = 3000
+    y = rng.choice([0.0, 1.0, 2.0], size=n)
+    sess = (np.arange(n) % 24 < 7).astype(float)
+    rec = T.pcmci_mixed_record(sess, y, np.abs(rng.normal(size=(n, 1))), var_names=["x", "y", "h"], tau_max=2)
+    assert rec["data_type"] == [1, 1, 0]
+
+
+def test_tp09_history_members_are_tested_against_the_rest_of_h():
+    pytest.importorskip("tigramite")
+    rng = np.random.default_rng(8)
+    n = 3000
+    y = rng.choice([0.0, 1.0, 2.0], size=n)
+    X = pd.DataFrame({"a": rng.normal(size=n), "px.rv_24": np.abs(rng.normal(size=n)), "px.logret_24": rng.normal(size=n)})
+    rep = T.mixed_ci_stage(X, y, k=2, history=["px.rv_24", "px.logret_24"], target_name="t", reference="a")
+    assert {"a", "px.rv_24", "px.logret_24"} <= set(rep["records"])
+    assert rep["records"]["px.logret_24"]["variables"] == ["x", "t", "px.rv_24"]

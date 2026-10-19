@@ -162,3 +162,117 @@ def bars_table(timestamps, close, high, low) -> pd.DataFrame:
     if idx.tz is not None:
         idx = idx.tz_convert("UTC").tz_localize(None)
     return ei.bars_from_prices(idx, close, high, low)
+
+
+# ------------------------------------------------------------------------- mixed-data CI stage (plan audit F07)
+EVIDENCE_LABEL = "CONDITIONAL_PREDICTIVE_ASSOCIATION"
+LAG0_MAPPING = ("lag 0 = the candidate's value on the COMPLETED bar t (available at bar end) against the label of the "
+                "window (t, t+k]; the label's support starts at bar t+1, so a lag-0 link is time-ordered x -> y")
+
+
+def _is_discrete(v) -> bool:
+    v = np.asarray(v, float)
+    v = v[np.isfinite(v)]
+    return bool(v.size and np.unique(v).size <= 3 and np.all(v == np.round(v)))
+
+
+def pcmci_mixed_record(x, y, H, *, var_names, tau_max, pc_alpha=0.05, alpha=0.01, missing_flag=999.0) -> dict:
+    """PCMCI+ with tigramite RegressionCI on the system [x, y, H...]; the type mask marks every discrete column
+    (y = the 3-class T1 label as ONE categorical variable, never two dummies; 0/1 candidates discrete).
+    Returns the x -> y links at every lag and a verdict, labelled CONDITIONAL_PREDICTIVE_ASSOCIATION."""
+    from tigramite import data_processing as pp
+    from tigramite.independence_tests.regressionCI import RegressionCI
+    from tigramite.pcmci import PCMCI
+
+    data = np.column_stack([np.asarray(x, float), np.asarray(y, float), np.asarray(H, float).reshape(len(x), -1)])
+    dtype = np.zeros(data.shape, dtype=int)
+    for j in range(data.shape[1]):
+        if _is_discrete(data[:, j]):
+            dtype[:, j] = 1
+    bad = ~np.all(np.isfinite(data), axis=1)
+    for j in range(data.shape[1]):          # affine z-score of continuous columns: the regression CI test is
+        if dtype[0, j] == 0:                 # invariant to it, the multinomial solver converges better
+            v = data[~bad, j]
+            sd = v.std()
+            data[:, j] = (data[:, j] - v.mean()) / (sd if sd > 0 else 1.0)
+    data[bad] = missing_flag
+    df = pp.DataFrame(data, var_names=list(var_names), data_type=dtype, missing_flag=missing_flag)
+    res = PCMCI(dataframe=df, cond_ind_test=RegressionCI(significance="analytic"), verbosity=0).run_pcmciplus(
+        tau_min=0, tau_max=int(tau_max), pc_alpha=pc_alpha)
+    g, pm, vm = res["graph"], res["p_matrix"], res["val_matrix"]
+    links = [{"lag": int(tau), "edge": str(g[0, 1, tau]), "p": float(pm[0, 1, tau]), "val": float(vm[0, 1, tau])}
+             for tau in range(int(tau_max) + 1) if g[0, 1, tau] != ""]
+    directed = [lk for lk in links if lk["edge"] == "-->" or (lk["lag"] == 0 and lk["edge"] in ("-->", "o-o", "x-x"))]
+    lagged = [lk for lk in links if lk["lag"] >= 1 and lk["edge"] == "-->"]
+    verdict = ("LAGGED_PARENT" if lagged else "LAG0_TIME_ORDERED_LINK" if directed else
+               "CONFLICTING_OR_REVERSED" if links else "NO_LINK")
+    return {"evidence_label": EVIDENCE_LABEL, "ci_test": "RegressionCI (tigramite; linear / multinomial regressions, chi2 deviance)",
+            "assumptions": "linear-in-parameters regressions per variable type; causal sufficiency NOT assumed or claimed; "
+                           "stationarity over the sample assumed", "lag0_mapping": LAG0_MAPPING,
+            "variables": list(var_names), "data_type": [int(dtype[0, j]) for j in range(data.shape[1])],
+            "tau_max": int(tau_max), "pc_alpha": pc_alpha, "alpha_reported": alpha, "n_rows": int(len(data)),
+            "n_masked": int(bad.sum()), "links_x_to_y": links, "verdict": verdict,
+            "significant_at_alpha": bool(any(lk["p"] <= alpha for lk in links))}
+
+
+def control_series(y, reference, *, seed: int = 0, shift_bars: int = 720) -> dict:
+    """Known controls: POSITIVE = noisy copy of the next row's label (a deliberate label leak at lag 1, must be
+    detected); NEGATIVE_NOISE = iid Gaussian; NEGATIVE_SHIFT = the reference candidate circularly shifted by
+    ``shift_bars`` (keeps its autocorrelation, breaks the alignment)."""
+    rng = np.random.default_rng(seed)
+    y = np.asarray(y, float)
+    nxt = np.r_[y[1:], np.nan]
+    pos = (nxt == 1).astype(float) - (nxt == 2).astype(float) + rng.normal(0, 1.0, len(y))
+    pos[~np.isfinite(nxt)] = np.nan
+    return {"POSITIVE_CONTROL_LABEL_LEAK_LAG1": pos, "NEGATIVE_CONTROL_NOISE": rng.normal(size=len(y)),
+            "NEGATIVE_CONTROL_CIRCULAR_SHIFT": np.roll(np.asarray(reference, float), int(shift_bars))}
+
+
+def mixed_ci_stage(X: pd.DataFrame, y, *, k: int, history: list[str], target_name: str, reference: str,
+                   halves: tuple | None = None, pc_alpha=0.05, alpha=0.01, seed: int = 0, workers: int = 1) -> dict:
+    """Every candidate through ``pcmci_mixed_record`` (tau_max = k), the three known controls, and a temporal
+    resampling (the same tests on two disjoint contiguous halves) for stability.  Mutually exclusive indicator
+    candidates (e.g. sessions) are tested one at a time, never jointly, so exclusivity cannot create a
+    deterministic relation inside one system."""
+    hist = [h for h in history if h in X.columns]
+    H = X[hist].to_numpy(float)
+    y = np.asarray(y, float)
+    cands = [c for c in X.columns if c not in hist]
+    ctrl = control_series(y, X[reference].to_numpy(float), seed=seed)
+    jobs = [(c, X[c].to_numpy(float)) for c in cands] + list(ctrl.items())
+
+    def run(xv, rows=slice(None)):
+        return pcmci_mixed_record(xv[rows], y[rows], H[rows], var_names=["x", target_name, *hist], tau_max=k,
+                                  pc_alpha=pc_alpha, alpha=alpha)
+
+    records = {}
+    if workers > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = {name: ex.submit(pcmci_mixed_record, xv, y, H, var_names=["x", target_name, *hist], tau_max=k,
+                                    pc_alpha=pc_alpha, alpha=alpha) for name, xv in jobs}
+            records = {name: f.result() for name, f in futs.items()}
+    else:
+        records = {name: run(xv) for name, xv in jobs}
+    stability = {}
+    if halves:
+        a, b = halves
+        for name, xv in jobs:
+            ra, rb = run(xv, a), run(xv, b)
+            stability[name] = {"first_half": ra["verdict"], "second_half": rb["verdict"],
+                               "agree": ra["verdict"] == rb["verdict"]}
+    # a history member that is itself a candidate is tested against H WITHOUT itself (never silently skipped)
+    for h in hist:
+        rest = [x for x in hist if x != h]
+        rec = pcmci_mixed_record(X[h].to_numpy(float), y, X[rest].to_numpy(float) if rest else np.zeros((len(y), 0)),
+                                 var_names=["x", target_name, *rest], tau_max=k, pc_alpha=pc_alpha, alpha=alpha)
+        rec["note"] = "history member tested against H without itself"
+        records[h] = rec
+        cands.append(h)
+    controls = {name: records[name]["verdict"] for name in ctrl}
+    controls_ok = (records["POSITIVE_CONTROL_LABEL_LEAK_LAG1"]["verdict"] in ("LAGGED_PARENT", "LAG0_TIME_ORDERED_LINK")
+                   and not records["NEGATIVE_CONTROL_NOISE"]["significant_at_alpha"])
+    return {"evidence_label": EVIDENCE_LABEL, "target": target_name, "history": hist, "tau_max": k,
+            "records": {c: records[c] for c in cands}, "controls": {n: records[n] for n in ctrl},
+            "control_verdicts": controls, "controls_behave": bool(controls_ok), "temporal_resampling": stability,
+            "neutrality": "NO_LINK / NOT_IDENTIFIED never rejects a feature; association is not intervention"}
